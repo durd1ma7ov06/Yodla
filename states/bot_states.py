@@ -11,3 +11,6 @@ class QuizStates(StatesGroup):
 class TypingStates(StatesGroup):
     in_progress = State()
 
+class ListeningStates(StatesGroup):
+    in_progress = State()
+

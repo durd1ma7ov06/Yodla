@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from config import BOT_TOKEN, GEMINI_API_KEYS, GROQ_API_KEYS
 from database.db import init_db
 from database.queries import seed_env_keys
-from handlers import common, add_words, units, quiz, typing, stats, admin, auto_reminder
+from handlers import common, add_words, units, quiz, typing, listening, stats, admin, auto_reminder
 from handlers.auto_reminder import auto_word_scheduler
 
 logging.basicConfig(
@@ -46,6 +46,7 @@ async def main():
     dp.include_router(units.router)
     dp.include_router(quiz.router)
     dp.include_router(typing.router)
+    dp.include_router(listening.router)
     dp.include_router(stats.router)
     dp.include_router(auto_reminder.router)
 

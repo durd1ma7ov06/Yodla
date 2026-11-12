@@ -52,6 +52,7 @@ async def show_statistics(message: Message):
     if unknown > 0:
         buttons.append([InlineKeyboardButton(text="🔴 Qiyin so'zlar ro'yxatini ko'rish", callback_data="view_difficult_words")])
         buttons.append([InlineKeyboardButton(text="⚡ Faqat qiyin so'zlardan test", callback_data="quiz_filter:all:unknown")])
+        buttons.append([InlineKeyboardButton(text="🎧 Faqat qiyin so'zlarni eshitib topish", callback_data="listen_filter:all:unknown")])
         buttons.append([InlineKeyboardButton(text="✍️ Faqat qiyin so'zlardan imlo", callback_data="typing_filter:all:unknown")])
     buttons.append([InlineKeyboardButton(text="🔙 Menyuga qaytish", callback_data="back_to_menu")])
 

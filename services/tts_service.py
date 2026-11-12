@@ -2,11 +2,11 @@ import io
 from gtts import gTTS
 import asyncio
 
-async def generate_speech_bytes(text: str, lang: str = "en") -> io.BytesIO:
+async def generate_speech_bytes(text: str, lang: str = "en", slow: bool = False) -> io.BytesIO:
     """Generate pronunciation MP3 audio buffer using gTTS asynchronously."""
     def _create_tts():
         fp = io.BytesIO()
-        tts = gTTS(text=text, lang=lang, slow=False)
+        tts = gTTS(text=text, lang=lang, slow=slow)
         tts.write_to_fp(fp)
         fp.seek(0)
         return fp
