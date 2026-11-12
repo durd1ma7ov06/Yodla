@@ -5,7 +5,6 @@ def get_units_keyboard(units: List[Dict[str, Any]], action_prefix: str) -> Inlin
     """Build keyboard with units."""
     buttons = []
     for u in units:
-        # e.g.: "Unit 1 (25 so'z)"
         btn_text = f"📁 {u['name']} ({u.get('word_count', 0)} ta)"
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"{action_prefix}:{u['id']}")])
         
@@ -14,13 +13,6 @@ def get_units_keyboard(units: List[Dict[str, Any]], action_prefix: str) -> Inlin
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_practice_filter_keyboard(prefix: str, unit_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    """
-    Select which words to practice:
-    - Barchasi (All)
-    - 🔴 Faqat bilmaganlarim (Difficult/Unknown only)
-    - 🟡 O'rganilayotganlar
-    - 🟢 Yodlanganlar
-    """
     uid_str = str(unit_id) if unit_id is not None else "all"
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -41,10 +33,13 @@ def get_unit_details_keyboard(unit_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="📖 So'zlar ro'yxati", callback_data=f"unit_words:{unit_id}"),
-                InlineKeyboardButton(text="🅰️ Test boshlash", callback_data=f"unit_quiz:{unit_id}")
+                InlineKeyboardButton(text="📄 Word (.docx) yuklash", callback_data=f"unit_export_word:{unit_id}")
             ],
             [
-                InlineKeyboardButton(text="✍️ Yozma mashq", callback_data=f"unit_typing:{unit_id}"),
+                InlineKeyboardButton(text="⚡ Test boshlash", callback_data=f"unit_quiz:{unit_id}"),
+                InlineKeyboardButton(text="✍️ Imlo mashqi", callback_data=f"unit_typing:{unit_id}")
+            ],
+            [
                 InlineKeyboardButton(text="🗑 Unitni o'chirish", callback_data=f"unit_delete:{unit_id}")
             ],
             [InlineKeyboardButton(text="🔙 Unitlar ro'yxatiga qaytish", callback_data="back_to_units")]
@@ -64,7 +59,6 @@ def get_confirm_save_keyboard() -> InlineKeyboardMarkup:
 def get_quiz_options_keyboard(options: List[str], correct_index: int, session_id: str) -> InlineKeyboardMarkup:
     buttons = []
     for i, opt in enumerate(options):
-        # Truncate option text if too long
         display_text = opt[:30] + ("..." if len(opt) > 30 else "")
         buttons.append([InlineKeyboardButton(text=f"{chr(65+i)}) {display_text}", callback_data=f"qz:{session_id}:{i}")])
     buttons.append([InlineKeyboardButton(text="🛑 Testni yakunlash", callback_data=f"qz:{session_id}:stop")])
@@ -83,4 +77,3 @@ def get_typing_action_keyboard(word_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
-

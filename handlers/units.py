@@ -1,10 +1,12 @@
+import re
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 
 from database.queries import get_user_units, get_unit, delete_unit, get_words_by_unit
 from keyboards.inline import get_unit_details_keyboard, get_units_keyboard
 from keyboards.reply import get_main_keyboard
+from services.export_service import generate_unit_word_doc
 
 router = Router()
 
@@ -102,15 +104,49 @@ async def cb_show_unit_words(callback: CallbackQuery):
 
     full_text = f"📖 <b>Unit so'zlari ({len(words)} ta):</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n\n".join(lines)
     if len(full_text) > 4000:
-        full_text = full_text[:3900] + "\n\n<i>... (matn qisqartirildi)</i>"
+        full_text = full_text[:3900] + "\n\n<i>... (To'liq ro'yxatni Word fayl sifatida yuklab olishingiz mumkin!)</i>"
 
     back_kb = InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="📄 Word (.docx) yuklab olish", callback_data=f"unit_export_word:{unit_id}")],
             [InlineKeyboardButton(text="🔙 Unitga qaytish", callback_data=f"view_unit:{unit_id}")]
         ]
     )
     await callback.message.edit_text(full_text, reply_markup=back_kb, parse_mode="HTML")
     await callback.answer()
+
+@router.callback_query(F.data.startswith("unit_export_word:"))
+async def cb_export_unit_word(callback: CallbackQuery):
+    unit_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+
+    unit = await get_unit(unit_id, user_id)
+    if not unit:
+        await callback.answer("Unit topilmadi!", show_alert=True)
+        return
+
+    words = await get_words_by_unit(unit_id, user_id)
+    if not words:
+        await callback.answer("Bu Unitda so'zlar yo'q!", show_alert=True)
+        return
+
+    await callback.answer("📄 Word hujjati tayyorlanmoqda...")
+    
+    docx_buffer = await generate_unit_word_doc(unit["name"], words)
+    safe_name = re.sub(r'[^\w\s-]', '', unit["name"]).strip().replace(' ', '_') or f"Unit_{unit_id}"
+    filename = f"{safe_name}_SozlaAI.docx"
+
+    doc_file = BufferedInputFile(docx_buffer.read(), filename=filename)
+    await callback.message.answer_document(
+        document=doc_file,
+        caption=(
+            f"📄 <b>{unit['name']} — Word Lug'at Fayli</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📚 Jami: <b>{len(words)} ta so'z</b>\n"
+            f"<i>Chop etish va o'qish uchun tayyor chiroyli jadval ko'rinishida!</i>"
+        ),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data.startswith("unit_delete:"))
 async def cb_delete_unit(callback: CallbackQuery):

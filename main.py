@@ -10,7 +10,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from config import BOT_TOKEN, GEMINI_API_KEYS, GROQ_API_KEYS
 from database.db import init_db
 from database.queries import seed_env_keys
-from handlers import common, add_words, units, quiz, typing, stats, admin
+from handlers import common, add_words, units, quiz, typing, stats, admin, auto_reminder
+from handlers.auto_reminder import auto_word_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,13 +47,17 @@ async def main():
     dp.include_router(quiz.router)
     dp.include_router(typing.router)
     dp.include_router(stats.router)
+    dp.include_router(auto_reminder.router)
 
-    # Start polling
+    # Start background 15-min vocabulary scheduler
+    scheduler_task = asyncio.create_task(auto_word_scheduler(bot))
+
     logger.info("Bot muvaffaqiyatli ishga tushdi va xabarlarni kutmoqda...")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
+        scheduler_task.cancel()
         await bot.session.close()
 
 if __name__ == "__main__":

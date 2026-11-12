@@ -60,3 +60,4 @@ sudo systemctl restart sozla_bot
 echo "✅ Bot muvaffaqiyatli o'rnatildi va 24/7 fonda ishga tushirildi!"
 echo "Holatni tekshirish uchun: sudo systemctl status sozla_bot"
 echo "Loglarni ko'rish uchun: sudo journalctl -u sozla_bot -f"
+

@@ -20,12 +20,24 @@ async def init_db():
                 full_name TEXT,
                 language_code TEXT,
                 is_premium INTEGER DEFAULT 0,
+                auto_send_enabled INTEGER DEFAULT 1,
+                auto_send_interval INTEGER DEFAULT 15,
+                last_auto_sent_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_active_at TIMESTAMP
             );
         """)
 
-        for col, col_type in [("language_code", "TEXT"), ("is_premium", "INTEGER DEFAULT 0"), ("last_active_at", "TIMESTAMP")]:
+        # Safe schema migration for existing databases
+        migrations = [
+            ("language_code", "TEXT"),
+            ("is_premium", "INTEGER DEFAULT 0"),
+            ("last_active_at", "TIMESTAMP"),
+            ("auto_send_enabled", "INTEGER DEFAULT 1"),
+            ("auto_send_interval", "INTEGER DEFAULT 15"),
+            ("last_auto_sent_at", "TIMESTAMP")
+        ]
+        for col, col_type in migrations:
             try:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type};")
             except Exception:

@@ -76,9 +76,87 @@ async def get_global_stats() -> Dict[str, Any]:
             "unknown": prog["unknown"] or 0
         }
 
+# --- Auto-Send / 15-Min Vocabulary Drip Queries ---
+async def get_user_auto_settings(user_id: int) -> Dict[str, Any]:
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT COALESCE(auto_send_enabled, 1) as enabled,
+                   COALESCE(auto_send_interval, 15) as interval,
+                   last_auto_sent_at
+            FROM users WHERE user_id = ?
+        """, (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return {"enabled": 1, "interval": 15, "last_auto_sent_at": None}
+        return dict(row)
+
+async def update_user_auto_settings(user_id: int, enabled: Optional[int] = None, interval: Optional[int] = None):
+    async with get_db_connection() as db:
+        if enabled is not None:
+            await db.execute("UPDATE users SET auto_send_enabled = ? WHERE user_id = ?", (enabled, user_id))
+        if interval is not None:
+            await db.execute("UPDATE users SET auto_send_interval = ? WHERE user_id = ?", (interval, user_id))
+        await db.commit()
+
+async def get_users_due_for_auto_word() -> List[Dict[str, Any]]:
+    """Returns users who have auto_send_enabled=1, have at least 1 word, and interval has elapsed."""
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT u.user_id, u.full_name, COALESCE(u.auto_send_interval, 15) as interval
+            FROM users u
+            WHERE COALESCE(u.auto_send_enabled, 1) = 1
+              AND EXISTS (SELECT 1 FROM words w WHERE w.user_id = u.user_id)
+              AND (
+                  u.last_auto_sent_at IS NULL
+                  OR (strftime('%s', 'now') - strftime('%s', u.last_auto_sent_at)) >= (COALESCE(u.auto_send_interval, 15) * 60)
+              )
+        """)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def get_next_word_for_auto_send(user_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Picks the best next word for spaced repetition drip:
+    Prioritizes:
+    1. 'unknown' words (least recently reviewed first)
+    2. 'learning' words (least recently reviewed first)
+    3. 'mastered' words (least recently reviewed first)
+    """
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT w.*, un.name as unit_name,
+                   COALESCE(p.status, 'learning') as status,
+                   p.last_reviewed_at
+            FROM words w
+            LEFT JOIN units un ON un.id = w.unit_id
+            LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = w.user_id
+            WHERE w.user_id = ?
+            ORDER BY 
+                CASE COALESCE(p.status, 'learning')
+                    WHEN 'unknown' THEN 1
+                    WHEN 'learning' THEN 2
+                    WHEN 'mastered' THEN 3
+                    ELSE 4
+                END,
+                COALESCE(p.last_reviewed_at, '1970-01-01') ASC,
+                RANDOM()
+            LIMIT 1
+        """, (user_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def mark_auto_word_sent(user_id: int, word_id: int):
+    async with get_db_connection() as db:
+        await db.execute("UPDATE users SET last_auto_sent_at = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+        await db.execute("""
+            UPDATE user_word_progress
+            SET last_reviewed_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND word_id = ?
+        """, (user_id, word_id))
+        await db.commit()
+
 # --- API Key Management Queries ---
 async def seed_env_keys(gemini_keys: List[str], groq_keys: List[str]):
-    """Seeds keys from .env into api_keys table if not already present."""
     async with get_db_connection() as db:
         for k in gemini_keys:
             await db.execute("""
@@ -93,7 +171,6 @@ async def seed_env_keys(gemini_keys: List[str], groq_keys: List[str]):
         await db.commit()
 
 async def add_api_key(provider: str, api_key: str) -> bool:
-    """Adds a new API key. Returns True if inserted, False if duplicate."""
     async with get_db_connection() as db:
         try:
             await db.execute("""
@@ -128,23 +205,17 @@ async def delete_api_key(key_id: int) -> bool:
 
 async def increment_key_usage(key_id: int):
     async with get_db_connection() as db:
-        await db.execute("""
-            UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ?
-        """, (key_id,))
+        await db.execute("UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ?", (key_id,))
         await db.commit()
 
 async def increment_key_error(key_id: int):
     async with get_db_connection() as db:
-        await db.execute("""
-            UPDATE api_keys SET error_count = error_count + 1 WHERE id = ?
-        """, (key_id,))
+        await db.execute("UPDATE api_keys SET error_count = error_count + 1 WHERE id = ?", (key_id,))
         await db.commit()
 
 async def reset_key_errors(key_id: int):
     async with get_db_connection() as db:
-        await db.execute("""
-            UPDATE api_keys SET error_count = 0, is_active = 1 WHERE id = ?
-        """, (key_id,))
+        await db.execute("UPDATE api_keys SET error_count = 0, is_active = 1 WHERE id = ?", (key_id,))
         await db.commit()
 
 # --- Unit Queries ---
@@ -238,6 +309,17 @@ async def get_words_by_unit(unit_id: int, user_id: int, status_filter: Optional[
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+async def get_word_by_id(word_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT w.*, un.name as unit_name
+            FROM words w
+            LEFT JOIN units un ON un.id = w.unit_id
+            WHERE w.id = ? AND w.user_id = ?
+        """, (word_id, user_id))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
 async def get_practice_words(user_id: int, unit_id: Optional[int] = None, status_filter: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
     async with get_db_connection() as db:
