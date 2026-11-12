@@ -25,7 +25,6 @@ async def init_db():
             );
         """)
 
-        # Safe schema migration for existing databases
         for col, col_type in [("language_code", "TEXT"), ("is_premium", "INTEGER DEFAULT 0"), ("last_active_at", "TIMESTAMP")]:
             try:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type};")
@@ -61,7 +60,7 @@ async def init_db():
             );
         """)
 
-        # 4. Bilgan/Bilmagan holati (Progress & Spaced Repetition)
+        # 4. Bilgan/Bilmagan holati
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_word_progress (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +73,19 @@ async def init_db():
                 UNIQUE(user_id, word_id),
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
                 FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE
+            );
+        """)
+
+        # 5. API Kalitlar (Multi-key Rotation & Admin Management)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                api_key TEXT NOT NULL UNIQUE,
+                is_active INTEGER DEFAULT 1,
+                usage_count INTEGER DEFAULT 0,
+                error_count INTEGER DEFAULT 0,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
 

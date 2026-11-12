@@ -41,7 +41,7 @@ async def get_all_users() -> List[Dict[str, Any]]:
         cursor = await db.execute("""
             SELECT user_id, username, full_name, language_code, is_premium, created_at, last_active_at
             FROM users
-            ORDER BY id DESC
+            ORDER BY created_at DESC
         """)
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -57,6 +57,9 @@ async def get_global_stats() -> Dict[str, Any]:
         unit_cur = await db.execute("SELECT COUNT(*) as c FROM units")
         unit_cnt = (await unit_cur.fetchone())["c"]
 
+        keys_cur = await db.execute("SELECT COUNT(*) as c FROM api_keys WHERE is_active = 1")
+        keys_cnt = (await keys_cur.fetchone())["c"]
+
         prog_cur = await db.execute("""
             SELECT 
                 SUM(CASE WHEN status = 'mastered' THEN 1 ELSE 0 END) as mastered,
@@ -68,9 +71,81 @@ async def get_global_stats() -> Dict[str, Any]:
             "users": u_cnt,
             "units": unit_cnt,
             "words": w_cnt,
+            "api_keys": keys_cnt,
             "mastered": prog["mastered"] or 0,
             "unknown": prog["unknown"] or 0
         }
+
+# --- API Key Management Queries ---
+async def seed_env_keys(gemini_keys: List[str], groq_keys: List[str]):
+    """Seeds keys from .env into api_keys table if not already present."""
+    async with get_db_connection() as db:
+        for k in gemini_keys:
+            await db.execute("""
+                INSERT OR IGNORE INTO api_keys (provider, api_key, is_active)
+                VALUES ('gemini', ?, 1)
+            """, (k.strip(),))
+        for k in groq_keys:
+            await db.execute("""
+                INSERT OR IGNORE INTO api_keys (provider, api_key, is_active)
+                VALUES ('groq', ?, 1)
+            """, (k.strip(),))
+        await db.commit()
+
+async def add_api_key(provider: str, api_key: str) -> bool:
+    """Adds a new API key. Returns True if inserted, False if duplicate."""
+    async with get_db_connection() as db:
+        try:
+            await db.execute("""
+                INSERT INTO api_keys (provider, api_key, is_active)
+                VALUES (?, ?, 1)
+            """, (provider.lower().strip(), api_key.strip()))
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+async def get_api_keys(provider: Optional[str] = None, active_only: bool = False) -> List[Dict[str, Any]]:
+    async with get_db_connection() as db:
+        query = "SELECT * FROM api_keys WHERE 1=1"
+        params: List[Any] = []
+        if provider:
+            query += " AND provider = ?"
+            params.append(provider.lower().strip())
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY error_count ASC, usage_count ASC, id ASC"
+        
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def delete_api_key(key_id: int) -> bool:
+    async with get_db_connection() as db:
+        cursor = await db.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def increment_key_usage(key_id: int):
+    async with get_db_connection() as db:
+        await db.execute("""
+            UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ?
+        """, (key_id,))
+        await db.commit()
+
+async def increment_key_error(key_id: int):
+    async with get_db_connection() as db:
+        await db.execute("""
+            UPDATE api_keys SET error_count = error_count + 1 WHERE id = ?
+        """, (key_id,))
+        await db.commit()
+
+async def reset_key_errors(key_id: int):
+    async with get_db_connection() as db:
+        await db.execute("""
+            UPDATE api_keys SET error_count = 0, is_active = 1 WHERE id = ?
+        """, (key_id,))
+        await db.commit()
 
 # --- Unit Queries ---
 async def create_unit(user_id: int, name: str) -> int:

@@ -7,8 +7,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from config import BOT_TOKEN, GEMINI_API_KEY, GROQ_API_KEY
+from config import BOT_TOKEN, GEMINI_API_KEYS, GROQ_API_KEYS
 from database.db import init_db
+from database.queries import seed_env_keys
 from handlers import common, add_words, units, quiz, typing, stats, admin
 
 logging.basicConfig(
@@ -25,9 +26,10 @@ async def main():
         logger.error("Xatolik: .env faylida BOT_TOKEN ko'rsatilmagan!")
         return
 
-    # Initialize SQLite database
+    # Initialize SQLite database and seed .env keys
     await init_db()
-    logger.info("Ma'lumotlar bazasi (SQLite) tayyor.")
+    await seed_env_keys(GEMINI_API_KEYS, GROQ_API_KEYS)
+    logger.info("Ma'lumotlar bazasi (SQLite) va API kalitlar tayyor.")
 
     # Create Bot and Dispatcher
     bot = Bot(
