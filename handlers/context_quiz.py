@@ -255,3 +255,4 @@ async def finish_context_quiz(message: Message, session_id: str, is_edit: bool =
         await message.edit_text(report, reply_markup=kb, parse_mode="HTML")
     else:
         await message.answer(report, reply_markup=kb, parse_mode="HTML")
+

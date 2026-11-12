@@ -1,8 +1,9 @@
 import json
 import secrets
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from .db import get_db_connection
+from config import ADMIN_ID
 
 _UZB_TZ = timezone(timedelta(hours=5))
 
@@ -51,6 +52,139 @@ async def get_all_users() -> List[Dict[str, Any]]:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+# --- Admin Management Queries ---
+async def is_admin_user(user_id: int) -> bool:
+    """Returns True if user is super admin or in admins table."""
+    if user_id == ADMIN_ID:
+        return True
+    async with get_db_connection() as db:
+        cursor = await db.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return row is not None
+
+async def get_all_admins() -> List[Dict[str, Any]]:
+    """Returns all secondary admins from database."""
+    async with get_db_connection() as db:
+        cursor = await db.execute("SELECT * FROM admins ORDER BY created_at ASC")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def add_admin(
+    user_id: int,
+    added_by: int,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> bool:
+    """Adds a new secondary admin. Returns True if added, False if already exists."""
+    async with get_db_connection() as db:
+        try:
+            # Check user details if not provided
+            if not username or not full_name:
+                u_cur = await db.execute("SELECT username, full_name FROM users WHERE user_id = ?", (user_id,))
+                u_row = await u_cur.fetchone()
+                if u_row:
+                    username = username or u_row["username"]
+                    full_name = full_name or u_row["full_name"]
+
+            await db.execute("""
+                INSERT INTO admins (user_id, added_by, username, full_name)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, added_by, username or "", full_name or f"Admin #{user_id}"))
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+async def remove_admin(user_id: int) -> bool:
+    """Removes a secondary admin."""
+    if user_id == ADMIN_ID:
+        return False  # Cannot remove super admin
+    async with get_db_connection() as db:
+        cursor = await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+# --- Detailed Users Table Queries (Pagination & Search) ---
+async def get_users_detailed(
+    limit: int = 10,
+    offset: int = 0,
+    search: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Returns paginated users list with their word and unit statistics."""
+    async with get_db_connection() as db:
+        base_where = "1=1"
+        params: List[Any] = []
+        if search:
+            search_term = f"%{search.strip().lower()}%"
+            base_where += " AND (CAST(u.user_id AS TEXT) LIKE ? OR LOWER(COALESCE(u.username, '')) LIKE ? OR LOWER(COALESCE(u.full_name, '')) LIKE ?)"
+            params.extend([search_term, search_term, search_term])
+
+        count_cur = await db.execute(f"SELECT COUNT(*) as cnt FROM users u WHERE {base_where}", params)
+        total_count = (await count_cur.fetchone())["cnt"]
+
+        query = f"""
+            SELECT u.user_id, u.username, u.full_name, u.language_code, u.is_premium,
+                   u.streak_count, u.max_streak, u.created_at, u.last_active_at,
+                   COALESCE(u.auto_send_enabled, 1) as auto_send_enabled,
+                   COUNT(DISTINCT w.id) as word_count,
+                   COUNT(DISTINCT un.id) as unit_count,
+                   SUM(CASE WHEN p.status = 'mastered' THEN 1 ELSE 0 END) as mastered_count,
+                   SUM(CASE WHEN p.status = 'unknown' THEN 1 ELSE 0 END) as unknown_count
+            FROM users u
+            LEFT JOIN units un ON un.user_id = u.user_id
+            LEFT JOIN words w ON w.user_id = u.user_id
+            LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = u.user_id
+            WHERE {base_where}
+            GROUP BY u.user_id
+            ORDER BY u.created_at DESC
+            LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows], total_count
+
+async def get_all_users_for_export() -> List[Dict[str, Any]]:
+    """Returns all users with full aggregated stats for Excel export."""
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT u.user_id, u.username, u.full_name, u.language_code, u.is_premium,
+                   u.streak_count, u.max_streak, u.created_at, u.last_active_at,
+                   COALESCE(u.auto_send_enabled, 1) as auto_send_enabled,
+                   COUNT(DISTINCT w.id) as word_count,
+                   COUNT(DISTINCT un.id) as unit_count,
+                   SUM(CASE WHEN p.status = 'mastered' THEN 1 ELSE 0 END) as mastered_count,
+                   SUM(CASE WHEN p.status = 'unknown' THEN 1 ELSE 0 END) as unknown_count
+            FROM users u
+            LEFT JOIN units un ON un.user_id = u.user_id
+            LEFT JOIN words w ON w.user_id = u.user_id
+            LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = u.user_id
+            GROUP BY u.user_id
+            ORDER BY u.created_at ASC
+        """)
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def get_user_full_detail(target_user_id: int) -> Optional[Dict[str, Any]]:
+    """Fetches comprehensive profile details for a specific user."""
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT u.*,
+                   COUNT(DISTINCT w.id) as word_count,
+                   COUNT(DISTINCT un.id) as unit_count,
+                   SUM(CASE WHEN p.status = 'mastered' THEN 1 ELSE 0 END) as mastered_count,
+                   SUM(CASE WHEN p.status = 'unknown' THEN 1 ELSE 0 END) as unknown_count,
+                   SUM(CASE WHEN COALESCE(p.status, 'learning') = 'learning' THEN 1 ELSE 0 END) as learning_count
+            FROM users u
+            LEFT JOIN units un ON un.user_id = u.user_id
+            LEFT JOIN words w ON w.user_id = u.user_id
+            LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = u.user_id
+            WHERE u.user_id = ?
+            GROUP BY u.user_id
+        """, (target_user_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
 async def get_global_stats() -> Dict[str, Any]:
     async with get_db_connection() as db:
         u_cur = await db.execute("SELECT COUNT(*) as c FROM users")
@@ -72,13 +206,29 @@ async def get_global_stats() -> Dict[str, Any]:
             FROM user_word_progress
         """)
         prog = await prog_cur.fetchone()
+
+        auto_cur = await db.execute("SELECT COUNT(*) as c FROM users WHERE COALESCE(auto_send_enabled, 1) = 1")
+        auto_cnt = (await auto_cur.fetchone())["c"]
+
+        share_cur = await db.execute("SELECT COUNT(*) as c, COALESCE(SUM(downloads_count), 0) as dl FROM unit_shares")
+        share_row = await share_cur.fetchone()
+        share_cnt = share_row["c"] if share_row else 0
+        dl_cnt = share_row["dl"] if share_row else 0
+
+        adm_cur = await db.execute("SELECT COUNT(*) as c FROM admins")
+        adm_cnt = (await adm_cur.fetchone())["c"]
+
         return {
             "users": u_cnt,
             "units": unit_cnt,
             "words": w_cnt,
             "api_keys": keys_cnt,
             "mastered": prog["mastered"] or 0,
-            "unknown": prog["unknown"] or 0
+            "unknown": prog["unknown"] or 0,
+            "active_auto": auto_cnt,
+            "total_shares": share_cnt,
+            "total_downloads": dl_cnt,
+            "secondary_admins": adm_cnt,
         }
 
 # --- Auto-Send / 15-Min Vocabulary Drip Queries ---

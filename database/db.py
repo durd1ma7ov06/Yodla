@@ -146,4 +146,15 @@ async def init_db():
             );
         """)
 
+        # 8. Yordamchi Adminlar (Secondary Admins)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY,
+                added_by INTEGER NOT NULL,
+                username TEXT,
+                full_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         await db.commit()

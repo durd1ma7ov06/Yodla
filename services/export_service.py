@@ -170,3 +170,110 @@ async def generate_unit_word_doc(unit_name: str, words: List[Dict[str, Any]]) ->
     """Asynchronously generate a styled Word (.docx) document for a unit."""
     return await asyncio.to_thread(_sync_generate_unit_docx, unit_name, words)
 
+def _sync_generate_users_excel(users: List[Dict[str, Any]]) -> io.BytesIO:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Foydalanuvchilar"
+    ws.views.sheetView[0].showGridLines = True
+
+    headers = [
+        "№",
+        "Telegram ID",
+        "Foydalanuvchi ismi",
+        "Username",
+        "Jami so'zlar",
+        "Yodlangan",
+        "O'rganilmoqda",
+        "Qiyin",
+        "Unitlar",
+        "Streak (kun)",
+        "Avto-Eslatma",
+        "Premium",
+        "Tili",
+        "Qo'shilgan sana",
+    ]
+
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    center_align = Alignment(horizontal="center", vertical="center")
+    left_align = Alignment(horizontal="left", vertical="center")
+
+    thin_border = Border(
+        left=Side(style="thin", color="E2E8F0"),
+        right=Side(style="thin", color="E2E8F0"),
+        top=Side(style="thin", color="E2E8F0"),
+        bottom=Side(style="thin", color="E2E8F0"),
+    )
+
+    # Write Header
+    ws.append(headers)
+    ws.row_dimensions[1].height = 28
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = thin_border
+
+    # Alternate row colors
+    even_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    regular_font = Font(name="Calibri", size=10)
+
+    for idx, u in enumerate(users, 1):
+        total_w = u.get("word_count", 0)
+        mast_w = u.get("mastered_count", 0)
+        unk_w = u.get("unknown_count", 0)
+        learn_w = max(0, total_w - mast_w - unk_w)
+
+        row_data = [
+            idx,
+            u.get("user_id"),
+            u.get("full_name") or "",
+            f"@{u['username']}" if u.get("username") else "-",
+            total_w,
+            mast_w,
+            learn_w,
+            unk_w,
+            u.get("unit_count", 0),
+            u.get("streak_count", 0),
+            "Ha (Faol)" if u.get("auto_send_enabled", 1) else "O'chirilgan",
+            "Ha ⭐" if u.get("is_premium") else "Yo'q",
+            u.get("language_code") or "uz",
+            str(u.get("created_at") or "")[:19],
+        ]
+        ws.append(row_data)
+        row_num = idx + 1
+        ws.row_dimensions[row_num].height = 20
+
+        is_even = idx % 2 == 0
+        for col_idx in range(1, len(row_data) + 1):
+            cell = ws.cell(row=row_num, column=col_idx)
+            cell.font = regular_font
+            cell.border = thin_border
+            if is_even:
+                cell.fill = even_fill
+            cell.alignment = left_align if col_idx in (3, 4) else center_align
+
+    # Auto-adjust column widths
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val_str = str(cell.value or "")
+            if len(val_str) > max_len:
+                max_len = len(val_str)
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 10)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+async def generate_users_excel(users: List[Dict[str, Any]]) -> io.BytesIO:
+    """Asynchronously generates a styled Excel (.xlsx) file with users table."""
+    return await asyncio.to_thread(_sync_generate_users_excel, users)
+
