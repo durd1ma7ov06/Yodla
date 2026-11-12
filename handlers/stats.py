@@ -17,7 +17,7 @@ async def show_statistics(message: Message):
         await message.answer(
             "📊 <b>Sizda hali hech qanday so'zlar mavjud emas.</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Lug'at qo'shish uchun <b>📸 Rasm / ✍️ Matndan so'z qo'shish</b> tugmasini bosing!",
+            "Lug'at qo'shish uchun <b>📸 Rasmdan so'z qo'shish</b> yoki <b>✍️ Yozib so'z qo'shish</b> tugmasini bosing!",
             reply_markup=get_main_keyboard(),
             parse_mode="HTML"
         )

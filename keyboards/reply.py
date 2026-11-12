@@ -4,7 +4,8 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📸 Rasm / ✍️ Matndan so'z qo'shish")
+                KeyboardButton(text="📸 Rasmdan so'z qo'shish"),
+                KeyboardButton(text="✍️ Yozib so'z qo'shish")
             ],
             [
                 KeyboardButton(text="📚 Lug'at to'plamlarim"),

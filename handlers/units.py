@@ -20,7 +20,7 @@ async def show_user_units(message: Message):
         await message.answer(
             "📭 <b>Sizda hali hech qanday Unit mavjud emas.</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Yangi lug'at qo'shish uchun <b>📸 Rasm / ✍️ Matndan so'z qo'shish</b> tugmasini bosing!",
+            "Yangi lug'at qo'shish uchun <b>📸 Rasmdan so'z qo'shish</b> yoki <b>✍️ Yozib so'z qo'shish</b> tugmasini bosing!",
             reply_markup=get_main_keyboard(),
             parse_mode="HTML"
         )
@@ -52,7 +52,7 @@ async def cb_view_unit_details(callback: CallbackQuery):
     unit_id_str = callback.data.split(":")[1]
     if unit_id_str == "new":
         await callback.message.edit_text(
-            "➕ Yangi Unit ochish uchun avval <b>📸 Rasm / ✍️ Matndan so'z qo'shish</b> tugmasini bosib so'zlarni yuboring.",
+            "➕ Yangi Unit ochish uchun avval <b>📸 Rasmdan so'z qo'shish</b> yoki <b>✍️ Yozib so'z qo'shish</b> tugmasini bosib so'zlarni yuboring.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_units")]])
         )
         await callback.answer()
