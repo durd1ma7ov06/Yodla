@@ -101,4 +101,20 @@ async def init_db():
             );
         """)
 
+        # 6. Avto-Eslatma Savollari (Persistent 15-min Quiz Challenges)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS auto_challenges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                word_id INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                correct_index INTEGER NOT NULL,
+                answered INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE
+            );
+        """)
+
         await db.commit()

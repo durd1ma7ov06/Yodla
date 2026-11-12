@@ -1,3 +1,4 @@
+import json
 from typing import List, Dict, Optional, Any
 from .db import get_db_connection
 
@@ -116,32 +117,37 @@ async def get_users_due_for_auto_word() -> List[Dict[str, Any]]:
 
 async def get_next_word_for_auto_send(user_id: int) -> Optional[Dict[str, Any]]:
     """
-    Picks the best next word for spaced repetition drip:
-    Prioritizes:
-    1. 'unknown' words (least recently reviewed first)
-    2. 'learning' words (least recently reviewed first)
-    3. 'mastered' words (least recently reviewed first)
+    Picks a random mistaken word first for spaced repetition quiz:
+    1. 'unknown' words (currently mistaken / not known)
+    2. 'learning' words with past mistakes (incorrect_count > 0)
+    3. 'learning' words (new / in progress)
+    4. 'mastered' words (review)
+    Within the highest priority group, avoids repeating the exact last sent word and picks randomly.
     """
     async with get_db_connection() as db:
         cursor = await db.execute("""
             SELECT w.*, un.name as unit_name,
                    COALESCE(p.status, 'learning') as status,
+                   COALESCE(p.incorrect_count, 0) as incorrect_count,
                    p.last_reviewed_at
             FROM words w
             LEFT JOIN units un ON un.id = w.unit_id
             LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = w.user_id
             WHERE w.user_id = ?
-            ORDER BY 
-                CASE COALESCE(p.status, 'learning')
-                    WHEN 'unknown' THEN 1
-                    WHEN 'learning' THEN 2
-                    WHEN 'mastered' THEN 3
+            ORDER BY
+                CASE
+                    WHEN COALESCE(p.status, 'learning') = 'unknown' THEN 1
+                    WHEN COALESCE(p.incorrect_count, 0) > 0 AND COALESCE(p.status, 'learning') != 'mastered' THEN 2
+                    WHEN COALESCE(p.status, 'learning') = 'learning' THEN 3
                     ELSE 4
-                END,
-                COALESCE(p.last_reviewed_at, '1970-01-01') ASC,
+                END ASC,
+                CASE
+                    WHEN w.id = COALESCE((SELECT word_id FROM auto_challenges WHERE user_id = ? ORDER BY id DESC LIMIT 1), -1) THEN 1
+                    ELSE 0
+                END ASC,
                 RANDOM()
             LIMIT 1
-        """, (user_id,))
+        """, (user_id, user_id))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -153,6 +159,83 @@ async def mark_auto_word_sent(user_id: int, word_id: int):
             SET last_reviewed_at = CURRENT_TIMESTAMP
             WHERE user_id = ? AND word_id = ?
         """, (user_id, word_id))
+        await db.commit()
+
+async def get_auto_quiz_distractors(
+    user_id: int,
+    current_word_id: int,
+    correct_value: str,
+    field: str = "translation",
+    count: int = 3
+) -> List[str]:
+    """Fetch distinct distractors for either 'translation' (uz) or 'word' (en)."""
+    col = "translation" if field == "translation" else "word"
+    correct_norm = (correct_value or "").strip().lower()
+    seen = {correct_norm} if correct_norm else set()
+    options: List[str] = []
+
+    async with get_db_connection() as db:
+        cursor = await db.execute(f"""
+            SELECT {col} as val FROM words
+            WHERE user_id = ? AND id != ? AND TRIM(COALESCE({col}, '')) != ''
+            ORDER BY RANDOM()
+            LIMIT 25
+        """, (user_id, current_word_id))
+        rows = await cursor.fetchall()
+        for row in rows:
+            val = (row["val"] or "").strip()
+            norm = val.lower()
+            if val and norm not in seen:
+                seen.add(norm)
+                options.append(val)
+                if len(options) >= count:
+                    break
+
+    if len(options) < count:
+        fallbacks = (
+            ["muhim, ahamiyatli", "qiyin, murakkab", "tez, chaqqon", "yangi, zamonaviy", "ishonchli", "kutilmagan"]
+            if col == "translation"
+            else ["reluctant", "inevitable", "accurate", "significant", "temporary", "essential"]
+        )
+        for dummy in fallbacks:
+            if len(options) >= count:
+                break
+            if dummy.lower() not in seen:
+                seen.add(dummy.lower())
+                options.append(dummy)
+
+    return options[:count]
+
+async def create_auto_challenge(
+    user_id: int,
+    word_id: int,
+    direction: str,
+    options: List[str],
+    correct_index: int
+) -> int:
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            INSERT INTO auto_challenges (user_id, word_id, direction, options_json, correct_index)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, word_id, direction, json.dumps(options, ensure_ascii=False), correct_index))
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_auto_challenge(challenge_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT * FROM auto_challenges WHERE id = ? AND user_id = ?
+        """, (challenge_id, user_id))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["options"] = json.loads(data["options_json"])
+        return data
+
+async def mark_auto_challenge_answered(challenge_id: int):
+    async with get_db_connection() as db:
+        await db.execute("UPDATE auto_challenges SET answered = 1 WHERE id = ?", (challenge_id,))
         await db.commit()
 
 # --- API Key Management Queries ---
