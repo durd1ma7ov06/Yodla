@@ -25,6 +25,7 @@ _MAIN_MENU_BTNS = {
     "⚡ Test rejimi (Quiz)",
     "✍️ Imlo mashqi (Spelling)",
     "🎧 Eshitib topish (Listening)",
+    "🧩 Gap to'ldirish (Kontekst)",
     "⏰ Avto-Eslatma (Har 15 min)",
     "💡 Qo'llanma va Yordam",
 }

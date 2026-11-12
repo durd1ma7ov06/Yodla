@@ -17,13 +17,14 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text="🎧 Eshitib topish (Listening)"),
-                KeyboardButton(text="✍️ Imlo mashqi (Spelling)")
+                KeyboardButton(text="🧩 Gap to'ldirish (Kontekst)")
             ],
             [
-                KeyboardButton(text="⏰ Avto-Eslatma (Har 15 min)"),
-                KeyboardButton(text="📊 Mening natijalarim")
+                KeyboardButton(text="✍️ Imlo mashqi (Spelling)"),
+                KeyboardButton(text="⏰ Avto-Eslatma (Har 15 min)")
             ],
             [
+                KeyboardButton(text="📊 Mening natijalarim"),
                 KeyboardButton(text="💡 Qo'llanma va Yordam")
             ]
         ],

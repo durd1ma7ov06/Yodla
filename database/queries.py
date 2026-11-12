@@ -1,6 +1,10 @@
 import json
+import secrets
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any
 from .db import get_db_connection
+
+_UZB_TZ = timezone(timedelta(hours=5))
 
 # --- User Queries ---
 async def upsert_user(
@@ -468,8 +472,47 @@ async def get_random_distractors(user_id: int, current_word_id: int, count: int 
                 options.append(dummy)
         return options[:count]
 
+async def update_user_streak(user_id: int) -> int:
+    """Updates and returns user's daily activity streak in Uzbekistan timezone (UTC+5)."""
+    today_dt = datetime.now(_UZB_TZ).date()
+    today_str = str(today_dt)
+    yesterday_str = str(today_dt - timedelta(days=1))
+
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT COALESCE(streak_count, 0) as streak_count,
+                   COALESCE(max_streak, 0) as max_streak,
+                   last_activity_date
+            FROM users WHERE user_id = ?
+        """, (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return 1
+
+        curr_streak = row["streak_count"]
+        max_streak = row["max_streak"]
+        last_date = row["last_activity_date"]
+
+        if last_date == today_str:
+            return curr_streak if curr_streak > 0 else 1
+
+        if last_date == yesterday_str:
+            new_streak = curr_streak + 1
+        else:
+            new_streak = 1
+
+        new_max = max(max_streak, new_streak)
+        await db.execute("""
+            UPDATE users
+            SET streak_count = ?, max_streak = ?, last_activity_date = ?
+            WHERE user_id = ?
+        """, (new_streak, new_max, today_str, user_id))
+        await db.commit()
+        return new_streak
+
 # --- Progress & Spaced Repetition Queries ---
 async def record_answer(user_id: int, word_id: int, is_correct: bool) -> str:
+    await update_user_streak(user_id)
     async with get_db_connection() as db:
         cursor = await db.execute("""
             SELECT correct_count, incorrect_count, status 
@@ -504,8 +547,26 @@ async def record_answer(user_id: int, word_id: int, is_correct: bool) -> str:
         await db.commit()
         return new_status
 
-async def get_user_stats(user_id: int) -> Dict[str, int]:
+async def get_user_stats(user_id: int) -> Dict[str, Any]:
     async with get_db_connection() as db:
+        u_cur = await db.execute("""
+            SELECT COALESCE(streak_count, 0) as streak_count,
+                   COALESCE(max_streak, 0) as max_streak,
+                   last_activity_date
+            FROM users WHERE user_id = ?
+        """, (user_id,))
+        u_row = await u_cur.fetchone()
+        today_str = str(datetime.now(_UZB_TZ).date())
+        yesterday_str = str(datetime.now(_UZB_TZ).date() - timedelta(days=1))
+
+        streak = 0
+        max_streak = 0
+        if u_row:
+            max_streak = u_row["max_streak"]
+            last_date = u_row["last_activity_date"]
+            if last_date in (today_str, yesterday_str):
+                streak = u_row["streak_count"]
+
         cursor = await db.execute("""
             SELECT 
                 COUNT(w.id) as total_words,
@@ -518,10 +579,107 @@ async def get_user_stats(user_id: int) -> Dict[str, int]:
         """, (user_id,))
         row = await cursor.fetchone()
         if not row:
-            return {"total_words": 0, "mastered_words": 0, "unknown_words": 0, "learning_words": 0}
+            return {"total_words": 0, "mastered_words": 0, "unknown_words": 0, "learning_words": 0, "streak": streak, "max_streak": max_streak}
         return {
             "total_words": row["total_words"] or 0,
             "mastered_words": row["mastered_words"] or 0,
             "unknown_words": row["unknown_words"] or 0,
             "learning_words": row["learning_words"] or 0,
+            "streak": streak,
+            "max_streak": max_streak,
         }
+
+# --- Unit Sharing Queries ---
+async def create_or_get_unit_share(unit_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db_connection() as db:
+        # Check existing share
+        cursor = await db.execute("""
+            SELECT * FROM unit_shares WHERE unit_id = ? AND user_id = ?
+        """, (unit_id, user_id))
+        row = await cursor.fetchone()
+        if row:
+            data = dict(row)
+            data["words"] = json.loads(data["words_json"])
+            return data
+
+        # Get unit & words
+        u_cur = await db.execute("SELECT name FROM units WHERE id = ? AND user_id = ?", (unit_id, user_id))
+        u_row = await u_cur.fetchone()
+        if not u_row:
+            return None
+
+        words_cur = await db.execute("""
+            SELECT word, transcription, uz_pronunciation, part_of_speech, translation, example_en, example_uz
+            FROM words WHERE unit_id = ? AND user_id = ?
+            ORDER BY id ASC
+        """, (unit_id, user_id))
+        words_rows = await words_cur.fetchall()
+        words = [dict(w) for w in words_rows]
+        if not words:
+            return None
+
+        share_code = secrets.token_urlsafe(6).replace("-", "").replace("_", "")[:8]
+        await db.execute("""
+            INSERT INTO unit_shares (share_code, unit_id, user_id, unit_name, words_json)
+            VALUES (?, ?, ?, ?, ?)
+        """, (share_code, unit_id, user_id, u_row["name"], json.dumps(words, ensure_ascii=False)))
+        await db.commit()
+
+        return {
+            "share_code": share_code,
+            "unit_id": unit_id,
+            "user_id": user_id,
+            "unit_name": u_row["name"],
+            "words": words,
+            "downloads_count": 0
+        }
+
+async def get_unit_share(share_code: str) -> Optional[Dict[str, Any]]:
+    async with get_db_connection() as db:
+        cursor = await db.execute("""
+            SELECT s.*, u.full_name as author_name
+            FROM unit_shares s
+            LEFT JOIN users u ON u.user_id = s.user_id
+            WHERE s.share_code = ?
+        """, (share_code.strip(),))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["words"] = json.loads(data["words_json"])
+        return data
+
+async def import_shared_unit(share_code: str, target_user_id: int) -> Optional[Dict[str, Any]]:
+    share = await get_unit_share(share_code)
+    if not share:
+        return None
+
+    words = share.get("words", [])
+    if not words:
+        return None
+
+    unit_name = share["unit_name"]
+    async with get_db_connection() as db:
+        # Check if already imported with same name
+        check_cur = await db.execute("SELECT id FROM units WHERE user_id = ? AND name = ?", (target_user_id, unit_name))
+        existing = await check_cur.fetchone()
+        target_name = unit_name if not existing else f"{unit_name} (ulashilgan)"
+
+        new_unit_id = await create_unit(target_user_id, target_name)
+        count = await add_words_bulk(new_unit_id, target_user_id, words)
+
+        await db.execute("UPDATE unit_shares SET downloads_count = downloads_count + 1 WHERE share_code = ?", (share_code,))
+        await db.commit()
+
+        return {
+            "unit_id": new_unit_id,
+            "unit_name": target_name,
+            "word_count": count,
+            "author_name": share.get("author_name") or "Foydalanuvchi"
+        }
+
+async def delete_word(word_id: int, user_id: int) -> bool:
+    async with get_db_connection() as db:
+        cursor = await db.execute("DELETE FROM words WHERE id = ? AND user_id = ?", (word_id, user_id))
+        await db.commit()
+        return cursor.rowcount > 0

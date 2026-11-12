@@ -41,9 +41,14 @@ def get_unit_details_keyboard(unit_id: int) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🎧 Eshitib topish", callback_data=f"unit_listening:{unit_id}"),
-                InlineKeyboardButton(text="✍️ Imlo mashqi", callback_data=f"unit_typing:{unit_id}")
+                InlineKeyboardButton(text="🧩 Gap to'ldirish", callback_data=f"unit_context:{unit_id}")
             ],
             [
+                InlineKeyboardButton(text="📖 AI bilan hikoya", callback_data=f"unit_story:{unit_id}"),
+                InlineKeyboardButton(text="🔗 Do'stlarga ulashish", callback_data=f"unit_share:{unit_id}")
+            ],
+            [
+                InlineKeyboardButton(text="✍️ Imlo mashqi", callback_data=f"unit_typing:{unit_id}"),
                 InlineKeyboardButton(text="🗑 Unitni o'chirish", callback_data=f"unit_delete:{unit_id}")
             ],
             [InlineKeyboardButton(text="🔙 Unitlar ro'yxatiga qaytish", callback_data="back_to_units")]

@@ -277,3 +277,4 @@ async def _finish_flashcards(message: Message, session_id: str):
         ]
     )
     await message.edit_text(report, reply_markup=kb, parse_mode="HTML")
+

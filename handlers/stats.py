@@ -26,6 +26,8 @@ async def show_statistics(message: Message):
     mastered = stats["mastered_words"]
     learning = stats["learning_words"]
     unknown = stats["unknown_words"]
+    streak = stats.get("streak", 0)
+    max_streak = stats.get("max_streak", 0)
 
     mastered_percent = round((mastered / total * 100), 1)
     unknown_percent = round((unknown / total * 100), 1)
@@ -33,9 +35,12 @@ async def show_statistics(message: Message):
 
     bar_mastered = progress_bar(mastered, total, length=8)
 
+    streak_line = f"🔥 <b>Kunlik uzluksiz o'rganish (Streak):</b> <b>{streak} kun</b> <i>(Eng uzuni: {max_streak} kun)</i>\n━━━━━━━━━━━━━━━━━━━━\n" if streak > 0 or max_streak > 0 else ""
+
     text = (
         "📊 <b>SOZLA AI — BILIM DARANGIZ:</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
+        f"{streak_line}"
         f"📚 Jami lug'at bazangiz: <b>{total} ta so'z</b>\n\n"
         f"🟢 <b>Yodlanganlar:</b> {mastered} ta ({mastered_percent}%)\n"
         f"<code>{bar_mastered}</code>\n"

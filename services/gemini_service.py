@@ -231,3 +231,111 @@ def _sync_test_key(provider: str, api_key: str) -> Tuple[bool, str]:
 async def test_api_key_live(provider: str, api_key: str) -> Tuple[bool, str]:
     """Tests if an API key is live and responding."""
     return await asyncio.to_thread(_sync_test_key, provider, api_key)
+
+def _sync_call_gemini_story(api_key: str, unit_name: str, words_sample: List[Dict[str, str]]) -> Tuple[bool, Any]:
+    client = genai.Client(api_key=api_key)
+    words_repr = ", ".join(f"{w['word']} ({w['translation']})" for w in words_sample)
+    prompt = (
+        "You are an expert English language teacher and storyteller for Uzbek students.\n"
+        f"Topic / Unit Name: {unit_name}\n"
+        f"Target Vocabulary Words: {words_repr}\n\n"
+        "Task: Write a captivating, simple English story (6-10 sentences, CEFR A1-B1 level) "
+        "that uses as many of the target words as possible in natural context.\n"
+        "Important Instructions:\n"
+        "1. Every time a target word (or its direct inflected form) appears in the English story, wrap it in HTML bold tags: <b>word</b>.\n"
+        "2. Provide an accurate, natural Uzbek translation for the entire story.\n"
+        "3. Provide an engaging English title and its Uzbek translation.\n"
+        "4. Return ONLY a pure JSON object with keys: 'title_en', 'title_uz', 'story_en', 'story_uz', 'used_words' (list of used English words).\n"
+        "Do NOT include markdown fences (like ```json), commentary, or extra text."
+    )
+    for model_name in GEMINI_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[prompt]
+            )
+            raw = response.text.strip()
+            if raw.startswith("```json"):
+                raw = raw[7:]
+            elif raw.startswith("```"):
+                raw = raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            data = json.loads(raw.strip())
+            return True, data
+        except Exception as e:
+            if "API_KEY_INVALID" in str(e) or "403" in str(e) or "401" in str(e):
+                return False, e
+            continue
+    return False, "Gemini story generation failed on all models"
+
+def _sync_call_groq_story(api_key: str, unit_name: str, words_sample: List[Dict[str, str]]) -> Tuple[bool, Any]:
+    from groq import Groq
+    groq_client = Groq(api_key=api_key)
+    words_repr = ", ".join(f"{w['word']} ({w['translation']})" for w in words_sample)
+    prompt = (
+        f"Topic: {unit_name}\nWords: {words_repr}\n"
+        "Write a simple 6-10 sentence story using these words. Wrap target words in <b>...</b>. "
+        "Return pure JSON with 'title_en', 'title_uz', 'story_en', 'story_uz', 'used_words'."
+    )
+    for gm in GROQ_MODELS:
+        try:
+            res = groq_client.chat.completions.create(
+                model=gm,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+                temperature=0.3
+            )
+            raw = res.choices[0].message.content.strip()
+            if raw.startswith("```json"):
+                raw = raw[7:]
+            elif raw.startswith("```"):
+                raw = raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            data = json.loads(raw.strip())
+            return True, data
+        except Exception as e:
+            if "invalid_api_key" in str(e).lower() or "401" in str(e):
+                return False, e
+            continue
+    return False, "Groq story generation failed"
+
+async def generate_unit_story(unit_name: str, words: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generates an engaging contextual mini-story using unit words."""
+    # Pick up to 12 words (prioritizing unknown and learning)
+    sorted_words = sorted(
+        words,
+        key=lambda w: 0 if w.get("status") == "unknown" else (1 if w.get("status") == "learning" else 2)
+    )
+    sample = [
+        {"word": w["word"].strip(), "translation": w["translation"].strip()}
+        for w in sorted_words[:12]
+        if (w.get("word") or "").strip()
+    ]
+    if not sample:
+        raise ValueError("Hikoya tuzish uchun so'zlar yetarli emas.")
+
+    # 1. Try Gemini
+    gemini_keys = await _get_provider_keys("gemini")
+    for k_row in gemini_keys:
+        success, result = await asyncio.to_thread(_sync_call_gemini_story, k_row["api_key"], unit_name, sample)
+        if success and isinstance(result, dict) and "story_en" in result:
+            if k_row["id"]:
+                await increment_key_usage(k_row["id"])
+            return result
+        elif k_row["id"]:
+            await increment_key_error(k_row["id"])
+
+    # 2. Try Groq
+    groq_keys = await _get_provider_keys("groq")
+    for k_row in groq_keys:
+        success, result = await asyncio.to_thread(_sync_call_groq_story, k_row["api_key"], unit_name, sample)
+        if success and isinstance(result, dict) and "story_en" in result:
+            if k_row["id"]:
+                await increment_key_usage(k_row["id"])
+            return result
+        elif k_row["id"]:
+            await increment_key_error(k_row["id"])
+
+    raise ValueError("Sun'iy intellekt orqali hikoya tuzishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.")
