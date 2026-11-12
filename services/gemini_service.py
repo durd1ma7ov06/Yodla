@@ -9,8 +9,20 @@ from config import GEMINI_API_KEY, GROQ_API_KEY
 
 logger = logging.getLogger(__name__)
 
-# Active fast multimodal model
-GEMINI_MODEL = "gemini-3.1-flash-lite"
+# Ordered list of active vision & text models for automatic fallback
+GEMINI_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemma-4-26b-a4b-it",
+]
+
+GROQ_MODELS = [
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b"
+]
 
 SYSTEM_PROMPT = """
 You are an expert English-to-Uzbek lexicographer and language teacher.
@@ -37,6 +49,12 @@ def clean_json_response(raw_text: str) -> List[Dict[str, Any]]:
     if text.endswith("```"):
         text = text[:-3]
     text = text.strip()
+    
+    # Handle cases where model puts preamble before '['
+    start_idx = text.find("[")
+    end_idx = text.rfind("]")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        text = text[start_idx:end_idx + 1]
     
     try:
         data = json.loads(text)
@@ -69,60 +87,75 @@ def _sync_extract_image(image_bytes: bytes) -> List[Dict[str, Any]]:
         mime_type="image/jpeg"
     )
     
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[prompt, image_part]
-    )
-    return clean_json_response(response.text)
-
-def _sync_extract_text(user_text: str) -> List[Dict[str, Any]]:
-    # Try Gemini first
-    if GEMINI_API_KEY:
+    last_error = None
+    for model_name in GEMINI_MODELS:
         try:
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            prompt = (
-                SYSTEM_PROMPT + "\n\n"
-                f"Input text provided by user:\n\"\"\"{user_text}\"\"\"\n\n"
-                "Extract the vocabulary words/expressions from this input. If the user provided translations, respect and refine them into standard Uzbek. "
-                "If only words are provided, find their accurate Uzbek translations, IPA transcriptions, parts of speech, and example sentences. "
-                "Return pure JSON list."
-            )
+            logger.info(f"Trying image extraction with model: {model_name}")
             response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[prompt]
+                model=model_name,
+                contents=[prompt, image_part]
             )
             return clean_json_response(response.text)
         except Exception as e:
-            logger.warning(f"Gemini text extraction failed: {e}. Trying Groq fallback...")
+            logger.warning(f"Model {model_name} failed for image: {e}")
+            last_error = e
+            continue
 
-    # Fallback to Groq
+    raise ValueError(f"AI rasmdan so'zlarni o'qiy olmadi (server band). Qayta urinib ko'ring. Tafsilot: {last_error}")
+
+def _sync_extract_text(user_text: str) -> List[Dict[str, Any]]:
+    # 1. Try Gemini models
+    if GEMINI_API_KEY:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        prompt = (
+            SYSTEM_PROMPT + "\n\n"
+            f"Input text provided by user:\n\"\"\"{user_text}\"\"\"\n\n"
+            "Extract the vocabulary words/expressions from this input. If the user provided translations, respect and refine them into standard Uzbek. "
+            "If only words are provided, find their accurate Uzbek translations, IPA transcriptions, parts of speech, and example sentences. "
+            "Return pure JSON list."
+        )
+        for model_name in GEMINI_MODELS:
+            try:
+                logger.info(f"Trying text extraction with Gemini: {model_name}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[prompt]
+                )
+                return clean_json_response(response.text)
+            except Exception as e:
+                logger.warning(f"Gemini {model_name} failed: {e}")
+                continue
+
+    # 2. Fallback to Groq models
     if GROQ_API_KEY:
-        try:
-            from groq import Groq
-            groq_client = Groq(api_key=GROQ_API_KEY)
-            prompt = (
-                SYSTEM_PROMPT + "\n\n"
-                f"Input text provided by user:\n\"\"\"{user_text}\"\"\"\n\n"
-                "Extract the vocabulary words/expressions. Return pure JSON array."
-            )
-            chat_completion = groq_client.chat.completions.create(
-                model="qwen/qwen3.8-27b",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=900,
-                temperature=0.2
-            )
-            content = chat_completion.choices[0].message.content
-            return clean_json_response(content)
-        except Exception as ge:
-            logger.error(f"Groq fallback failed: {ge}")
-            raise ge
+        from groq import Groq
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        prompt = (
+            SYSTEM_PROMPT + "\n\n"
+            f"Input text provided by user:\n\"\"\"{user_text}\"\"\"\n\n"
+            "Extract the vocabulary words/expressions. Return pure JSON array."
+        )
+        for gm in GROQ_MODELS:
+            try:
+                logger.info(f"Trying text extraction with Groq: {gm}")
+                chat_completion = groq_client.chat.completions.create(
+                    model=gm,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=900,
+                    temperature=0.2
+                )
+                content = chat_completion.choices[0].message.content
+                return clean_json_response(content)
+            except Exception as ge:
+                logger.warning(f"Groq {gm} failed: {ge}")
+                continue
 
-    raise ValueError("Hech qanday AI servisi ishlamadi.")
+    raise ValueError("Hech qanday AI servisi javob bermadi. Birozdan so'ng qayta urinib ko'ring.")
 
 async def extract_words_from_image(image_bytes: bytes) -> List[Dict[str, Any]]:
-    """Extract vocabulary from image using Gemini Vision asynchronously."""
+    """Extract vocabulary from image using Gemini Vision with multi-model fallback."""
     return await asyncio.to_thread(_sync_extract_image, image_bytes)
 
 async def extract_words_from_text(user_text: str) -> List[Dict[str, Any]]:
-    """Extract and analyze vocabulary from text asynchronously."""
+    """Extract and analyze vocabulary from text with multi-model & Groq fallback."""
     return await asyncio.to_thread(_sync_extract_text, user_text)
