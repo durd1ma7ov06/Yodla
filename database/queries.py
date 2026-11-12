@@ -83,27 +83,37 @@ async def get_user_auto_settings(user_id: int) -> Dict[str, Any]:
         cursor = await db.execute("""
             SELECT COALESCE(auto_send_enabled, 1) as enabled,
                    COALESCE(auto_send_interval, 15) as interval,
+                   COALESCE(quiet_hours_enabled, 1) as quiet_hours_enabled,
                    last_auto_sent_at
             FROM users WHERE user_id = ?
         """, (user_id,))
         row = await cursor.fetchone()
         if not row:
-            return {"enabled": 1, "interval": 15, "last_auto_sent_at": None}
+            return {"enabled": 1, "interval": 15, "quiet_hours_enabled": 1, "last_auto_sent_at": None}
         return dict(row)
 
-async def update_user_auto_settings(user_id: int, enabled: Optional[int] = None, interval: Optional[int] = None):
+async def update_user_auto_settings(
+    user_id: int,
+    enabled: Optional[int] = None,
+    interval: Optional[int] = None,
+    quiet_hours_enabled: Optional[int] = None,
+):
     async with get_db_connection() as db:
         if enabled is not None:
             await db.execute("UPDATE users SET auto_send_enabled = ? WHERE user_id = ?", (enabled, user_id))
         if interval is not None:
             await db.execute("UPDATE users SET auto_send_interval = ? WHERE user_id = ?", (interval, user_id))
+        if quiet_hours_enabled is not None:
+            await db.execute("UPDATE users SET quiet_hours_enabled = ? WHERE user_id = ?", (quiet_hours_enabled, user_id))
         await db.commit()
 
 async def get_users_due_for_auto_word() -> List[Dict[str, Any]]:
     """Returns users who have auto_send_enabled=1, have at least 1 word, and interval has elapsed."""
     async with get_db_connection() as db:
         cursor = await db.execute("""
-            SELECT u.user_id, u.full_name, COALESCE(u.auto_send_interval, 15) as interval
+            SELECT u.user_id, u.full_name,
+                   COALESCE(u.auto_send_interval, 15) as interval,
+                   COALESCE(u.quiet_hours_enabled, 1) as quiet_hours_enabled
             FROM users u
             WHERE COALESCE(u.auto_send_enabled, 1) = 1
               AND EXISTS (SELECT 1 FROM words w WHERE w.user_id = u.user_id)
@@ -350,13 +360,14 @@ async def add_words_bulk(unit_id: int, user_id: int, words: List[Dict[str, Any]]
             if not word:
                 continue
             cursor = await db.execute("""
-                INSERT INTO words (unit_id, user_id, word, transcription, part_of_speech, translation, example_en, example_uz)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO words (unit_id, user_id, word, transcription, uz_pronunciation, part_of_speech, translation, example_en, example_uz)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 unit_id,
                 user_id,
                 word,
                 item.get("transcription", ""),
+                item.get("uz_pronunciation", ""),
                 item.get("part_of_speech", ""),
                 item.get("translation", ""),
                 item.get("example_en", ""),

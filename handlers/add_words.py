@@ -18,8 +18,10 @@ router = Router()
 _MAIN_MENU_BTNS = {
     "📸 Rasmdan so'z qo'shish",
     "✍️ Yozib so'z qo'shish",
+    "📦 Boshlang'ich to'plamlar",
     "📚 Lug'at to'plamlarim",
     "📊 Mening natijalarim",
+    "🃏 Flashcard (Karta)",
     "⚡ Test rejimi (Quiz)",
     "✍️ Imlo mashqi (Spelling)",
     "🎧 Eshitib topish (Listening)",
@@ -237,7 +239,14 @@ async def handle_extracted_words(message: Message, state: FSMContext, words: lis
     preview_lines = []
     for i, w in enumerate(words[:12], 1):
         word_str = html.escape(str(w.get("word", "")).upper())
-        trans = f" <code>{html.escape(str(w.get('transcription', '')))}</code>" if w.get("transcription") else ""
+        ipa = str(w.get("transcription", "") or "").strip()
+        uz_pron = str(w.get("uz_pronunciation", "") or "").strip()
+        pron_parts = []
+        if uz_pron:
+            pron_parts.append(f"🗣 <i>[{html.escape(uz_pron)}]</i>")
+        if ipa:
+            pron_parts.append(f"<code>{html.escape(ipa)}</code>")
+        trans = (" " + " • ".join(pron_parts)) if pron_parts else ""
         pos = f" <i>({html.escape(str(w.get('part_of_speech', '')))})</i>" if w.get("part_of_speech") else ""
         uz = html.escape(str(w.get("translation", "")))
         preview_lines.append(f"<b>{i}. {word_str}</b>{pos}{trans}\n   🇺🇿 {uz}")

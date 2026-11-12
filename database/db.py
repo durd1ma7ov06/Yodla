@@ -22,6 +22,7 @@ async def init_db():
                 is_premium INTEGER DEFAULT 0,
                 auto_send_enabled INTEGER DEFAULT 1,
                 auto_send_interval INTEGER DEFAULT 15,
+                quiet_hours_enabled INTEGER DEFAULT 1,
                 last_auto_sent_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_active_at TIMESTAMP
@@ -35,6 +36,7 @@ async def init_db():
             ("last_active_at", "TIMESTAMP"),
             ("auto_send_enabled", "INTEGER DEFAULT 1"),
             ("auto_send_interval", "INTEGER DEFAULT 15"),
+            ("quiet_hours_enabled", "INTEGER DEFAULT 1"),
             ("last_auto_sent_at", "TIMESTAMP")
         ]
         for col, col_type in migrations:
@@ -62,6 +64,7 @@ async def init_db():
                 user_id INTEGER NOT NULL,
                 word TEXT NOT NULL,
                 transcription TEXT,
+                uz_pronunciation TEXT,
                 part_of_speech TEXT,
                 translation TEXT NOT NULL,
                 example_en TEXT,
@@ -71,6 +74,10 @@ async def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             );
         """)
+        try:
+            await db.execute("ALTER TABLE words ADD COLUMN uz_pronunciation TEXT;")
+        except Exception:
+            pass
 
         # 4. Bilgan/Bilmagan holati
         await db.execute("""

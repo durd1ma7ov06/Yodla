@@ -257,8 +257,9 @@ async def cb_handle_listening_answer(callback: CallbackQuery, state: FSMContext)
     correct_trans = current_word["translation"]
 
     new_status = await record_answer(callback.from_user.id, current_word["id"], is_correct)
+    uz_pron = f" <i>[{html.escape(current_word['uz_pronunciation'])}]</i>" if current_word.get("uz_pronunciation") else ""
     trans = f" [<code>{html.escape(current_word['transcription'])}</code>]" if current_word.get("transcription") else ""
-    word_line = f"🇬🇧 <b>{html.escape(current_word['word'].upper())}</b>{trans} — 🇺🇿 <b>{html.escape(correct_trans)}</b>"
+    word_line = f"🇬🇧 <b>{html.escape(current_word['word'].upper())}</b>{uz_pron}{trans} — 🇺🇿 <b>{html.escape(correct_trans)}</b>"
 
     if is_correct:
         session["correct"] += 1
@@ -320,3 +321,4 @@ async def finish_listening(message: Message, session_id: str):
         ]
     )
     await message.answer(report, reply_markup=kb, parse_mode="HTML")
+

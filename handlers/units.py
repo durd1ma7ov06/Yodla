@@ -17,11 +17,15 @@ async def show_user_units(message: Message):
     units = await get_user_units(user_id)
     
     if not units:
+        empty_kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="📦 Tayyor boshlang'ich to'plamlar", callback_data="open_starter_packs")]]
+        )
         await message.answer(
             "📭 <b>Sizda hali hech qanday Unit mavjud emas.</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Yangi lug'at qo'shish uchun <b>📸 Rasmdan so'z qo'shish</b> yoki <b>✍️ Yozib so'z qo'shish</b> tugmasini bosing!",
-            reply_markup=get_main_keyboard(),
+            "• Tayyor so'zlardan boshlash uchun <b>📦 Tayyor boshlang'ich to'plamlar</b> tugmasini bosing;\n"
+            "• Yoki <b>📸 Rasmdan so'z qo'shish</b> / <b>✍️ Yozib so'z qo'shish</b> orqali o'z lug'atingizni kiriting!",
+            reply_markup=empty_kb,
             parse_mode="HTML"
         )
         return
@@ -99,8 +103,9 @@ async def cb_show_unit_words(callback: CallbackQuery):
     for i, w in enumerate(words, 1):
         status = w.get("status", "learning")
         emoji = "🟢" if status == "mastered" else ("🔴" if status == "unknown" else "🟡")
+        uz_pron = f" 🗣 <i>[{w['uz_pronunciation']}]</i>" if w.get("uz_pronunciation") else ""
         trans = f" <code>{w['transcription']}</code>" if w.get("transcription") else ""
-        lines.append(f"{emoji} <b>{i}. {w['word'].upper()}</b>{trans}\n   🇺🇿 {w['translation']}")
+        lines.append(f"{emoji} <b>{i}. {w['word'].upper()}</b>{uz_pron}{trans}\n   🇺🇿 {w['translation']}")
 
     full_text = f"📖 <b>Unit so'zlari ({len(words)} ta):</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n\n".join(lines)
     if len(full_text) > 4000:

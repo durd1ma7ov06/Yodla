@@ -8,16 +8,20 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="✍️ Yozib so'z qo'shish")
             ],
             [
-                KeyboardButton(text="📚 Lug'at to'plamlarim"),
-                KeyboardButton(text="📊 Mening natijalarim")
+                KeyboardButton(text="📦 Boshlang'ich to'plamlar"),
+                KeyboardButton(text="📚 Lug'at to'plamlarim")
             ],
             [
-                KeyboardButton(text="⚡ Test rejimi (Quiz)"),
-                KeyboardButton(text="✍️ Imlo mashqi (Spelling)")
+                KeyboardButton(text="🃏 Flashcard (Karta)"),
+                KeyboardButton(text="⚡ Test rejimi (Quiz)")
             ],
             [
                 KeyboardButton(text="🎧 Eshitib topish (Listening)"),
-                KeyboardButton(text="⏰ Avto-Eslatma (Har 15 min)")
+                KeyboardButton(text="✍️ Imlo mashqi (Spelling)")
+            ],
+            [
+                KeyboardButton(text="⏰ Avto-Eslatma (Har 15 min)"),
+                KeyboardButton(text="📊 Mening natijalarim")
             ],
             [
                 KeyboardButton(text="💡 Qo'llanma va Yordam")

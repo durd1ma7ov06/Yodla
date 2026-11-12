@@ -33,6 +33,7 @@ Instructions:
 2. For each word, provide:
    - "word": The English word in base/lemma form (lowercase).
    - "transcription": IPA phonetic transcription (e.g. "/ˌæk.sɪˈdent/").
+   - "uz_pronunciation": Simple beginner-friendly pronunciation guide written in Uzbek Latin letters (e.g. "eksident" for "accident", "byutiful" for "beautiful", "ri-laktnt" for "reluctant").
    - "part_of_speech": The part of speech in English (e.g. "noun", "verb", "adjective", "adverb", "phrasal verb").
    - "translation": Natural and accurate Uzbek translation(s) commonly used in Uzbekistan (Latin alphabet).
    - "example_en": A clear, practical example sentence using the word.

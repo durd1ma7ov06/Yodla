@@ -115,7 +115,12 @@ def _sync_generate_unit_docx(unit_name: str, words: List[Dict[str, Any]]) -> io.
         status_label = "🟢 Yodlandi" if status == "mastered" else ("🔴 Qiyin" if status == "unknown" else "🟡 Yangi")
         pos = f" ({w['part_of_speech']})" if w.get("part_of_speech") else ""
         word_text = f"{w.get('word', '')}{pos}"
-        trans_text = w.get("transcription", "") or "-"
+        ipa = (w.get("transcription") or "").strip()
+        uz_pron = (w.get("uz_pronunciation") or "").strip()
+        if ipa and uz_pron:
+            trans_text = f"{ipa}\n[{uz_pron}]"
+        else:
+            trans_text = ipa or (f"[{uz_pron}]" if uz_pron else "-")
         uz_text = w.get("translation", "")
         
         ex_en = w.get("example_en", "")
@@ -164,3 +169,4 @@ def _sync_generate_unit_docx(unit_name: str, words: List[Dict[str, Any]]) -> io.
 async def generate_unit_word_doc(unit_name: str, words: List[Dict[str, Any]]) -> io.BytesIO:
     """Asynchronously generate a styled Word (.docx) document for a unit."""
     return await asyncio.to_thread(_sync_generate_unit_docx, unit_name, words)
+

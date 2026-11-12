@@ -36,11 +36,14 @@ def get_unit_details_keyboard(unit_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📄 Word (.docx) yuklash", callback_data=f"unit_export_word:{unit_id}")
             ],
             [
-                InlineKeyboardButton(text="⚡ Test boshlash", callback_data=f"unit_quiz:{unit_id}"),
-                InlineKeyboardButton(text="✍️ Imlo mashqi", callback_data=f"unit_typing:{unit_id}")
+                InlineKeyboardButton(text="🃏 Flashcard (Karta)", callback_data=f"unit_flashcards:{unit_id}"),
+                InlineKeyboardButton(text="⚡ Test boshlash", callback_data=f"unit_quiz:{unit_id}")
             ],
             [
                 InlineKeyboardButton(text="🎧 Eshitib topish", callback_data=f"unit_listening:{unit_id}"),
+                InlineKeyboardButton(text="✍️ Imlo mashqi", callback_data=f"unit_typing:{unit_id}")
+            ],
+            [
                 InlineKeyboardButton(text="🗑 Unitni o'chirish", callback_data=f"unit_delete:{unit_id}")
             ],
             [InlineKeyboardButton(text="🔙 Unitlar ro'yxatiga qaytish", callback_data="back_to_units")]

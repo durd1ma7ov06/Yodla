@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import html
 import logging
 import random
@@ -59,9 +60,10 @@ def _build_challenge_text(
 
     if direction == "en_to_uz":
         dir_label = "🇬🇧 ➔ 🇺🇿"
+        uz_pron = f"\n🗣 <b>O'qilishi:</b> <i>[{html.escape(word['uz_pronunciation'])}]</i>" if word.get("uz_pronunciation") else ""
         trans = f" [<code>{html.escape(word['transcription'])}</code>]" if word.get("transcription") else ""
         prompt_block = (
-            f"🇬🇧 <b>{html.escape(word['word'].upper())}</b>{pos}{trans}\n\n"
+            f"🇬🇧 <b>{html.escape(word['word'].upper())}</b>{pos}{trans}{uz_pron}\n\n"
             f"❓ <i>Ushbu inglizcha so'zning o'zbekcha tarjimasini toping:</i>"
         )
     else:
@@ -118,12 +120,13 @@ def _build_revealed_text(
     unit_name = html.escape(word.get("unit_name") or "Umumiy")
     pos = f" <i>({html.escape(word['part_of_speech'])})</i>" if word.get("part_of_speech") else ""
     trans = f" [<code>{html.escape(word['transcription'])}</code>]" if word.get("transcription") else ""
+    uz_pron = f"\n🗣 <b>O'qilishi:</b> <i>[{html.escape(word['uz_pronunciation'])}]</i>" if word.get("uz_pronunciation") else ""
 
     text = (
         f"{result_banner}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📁 <b>Unit:</b> {unit_name}\n\n"
-        f"🇬🇧 <b>{html.escape(word['word'].upper())}</b>{pos}{trans}\n"
+        f"🇬🇧 <b>{html.escape(word['word'].upper())}</b>{pos}{trans}{uz_pron}\n"
         f"🇺🇿 <b>Tarjimasi:</b> {html.escape(word['translation'])}"
     )
     if word.get("example_en"):
@@ -196,14 +199,27 @@ async def send_auto_word_to_user(bot: Bot, user_id: int, interval_min: int = 15)
         return False
 
 
+_UZB_TZ = timezone(timedelta(hours=5))
+
+
+def _is_quiet_hours_uzb(now_dt: datetime | None = None) -> bool:
+    """Returns True between 22:30 and 07:30 Uzbekistan time (UTC+5)."""
+    local = (now_dt or datetime.now(_UZB_TZ)).astimezone(_UZB_TZ)
+    hm = local.hour * 60 + local.minute
+    return hm >= (22 * 60 + 30) or hm < (7 * 60 + 30)
+
+
 async def auto_word_scheduler(bot: Bot):
     """Background loop checking every 60 seconds for users due for their vocabulary drip."""
     logger.info("⏰ Avto-Eslatma (Har 15 minutlik so'z yuborish) tizimi ishga tushdi.")
     while True:
         try:
             await asyncio.sleep(60)
+            is_night = _is_quiet_hours_uzb()
             due_users = await get_users_due_for_auto_word()
             for u in due_users:
+                if is_night and u.get("quiet_hours_enabled", 1):
+                    continue
                 await send_auto_word_to_user(bot, u["user_id"], u["interval"])
                 await asyncio.sleep(0.2)
         except asyncio.CancelledError:
@@ -226,8 +242,10 @@ async def _build_settings_ui(user_id: int):
     settings = await get_user_auto_settings(user_id)
     enabled = bool(settings["enabled"])
     interval = settings["interval"]
+    quiet_on = bool(settings.get("quiet_hours_enabled", 1))
 
     status_str = "🟢 Yoqilgan (Faol)" if enabled else "🔴 O'chirilgan"
+    quiet_str = "🌙 Yoqilgan (22:30–07:30 jim)" if quiet_on else "☀️ O'chirilgan (24/7)"
     interval_str = _format_interval_label(interval)
 
     text = (
@@ -239,11 +257,13 @@ async def _build_settings_ui(user_id: int):
         "• 🇺🇿 O'zbekcha kelsa — 🇬🇧 inglizchasini topasiz.\n\n"
         f"• <b>Holati:</b> {status_str}\n"
         f"• <b>Yuborish tezligi:</b> <b>{interval_str}</b>\n"
+        f"• <b>Tungi uyqu rejimi:</b> {quiet_str}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "<i>Sozlash uchun tugmalardan foydalaning:</i>"
     )
 
     toggle_text = "🔴 O'chirib qo'yish" if enabled else "🟢 Yoqish"
+    quiet_btn = "🌙 Uyqu rejimini o'chirish (24/7)" if quiet_on else "🌙 Uyqu rejimini yoqish (22:30–07:30)"
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=toggle_text, callback_data="auto_toggle")],
@@ -253,6 +273,7 @@ async def _build_settings_ui(user_id: int):
                 InlineKeyboardButton(text=f"{'✅ ' if interval == 60 else ''}1 soat", callback_data="auto_int:60"),
                 InlineKeyboardButton(text=f"{'✅ ' if interval == 180 else ''}3 soat", callback_data="auto_int:180"),
             ],
+            [InlineKeyboardButton(text=quiet_btn, callback_data="auto_quiet_toggle")],
             [InlineKeyboardButton(text="⚡ Hozir bitta savol yuborish", callback_data="auto_send_now")],
             [InlineKeyboardButton(text="🔙 Menyuga qaytish", callback_data="back_to_menu")],
         ]
@@ -283,6 +304,20 @@ async def cb_toggle_auto(callback: CallbackQuery):
     text, kb = await _build_settings_ui(user_id)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer("Sozlama yangilandi!")
+
+
+@router.callback_query(F.data == "auto_quiet_toggle")
+async def cb_toggle_quiet_hours(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    settings = await get_user_auto_settings(user_id)
+    new_val = 0 if settings.get("quiet_hours_enabled", 1) else 1
+    await update_user_auto_settings(user_id, quiet_hours_enabled=new_val)
+
+    text, kb = await _build_settings_ui(user_id)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer(
+        "🌙 Tungi uyqu rejimi yoqildi (22:30–07:30)!" if new_val else "☀️ Uyqu rejimi o'chirildi (24/7)!"
+    )
 
 
 @router.callback_query(F.data.startswith("auto_int:"))
