@@ -243,7 +243,12 @@ async def send_auto_word_to_user(
         await update_user_auto_settings(user_id, enabled=0)
         return False
     except Exception as e:
-        logger.warning(f"Failed to send auto word to {user_id}: {e}")
+        err_str = str(e).lower()
+        if "chat not found" in err_str or "user is deactivated" in err_str or "bot was blocked" in err_str:
+            logger.info(f"User {user_id} unreachable ({e}). Disabling auto_send.")
+            await update_user_auto_settings(user_id, enabled=0)
+        else:
+            logger.warning(f"Failed to send auto word to {user_id}: {e}")
         return False
 
 
