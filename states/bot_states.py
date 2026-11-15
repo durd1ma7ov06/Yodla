@@ -15,3 +15,6 @@ class TypingStates(StatesGroup):
 class ListeningStates(StatesGroup):
     in_progress = State()
 
+class AutoReminderStates(StatesGroup):
+    waiting_for_custom_interval = State()
+

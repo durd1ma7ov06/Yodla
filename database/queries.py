@@ -231,26 +231,46 @@ async def get_global_stats() -> Dict[str, Any]:
             "secondary_admins": adm_cnt,
         }
 
-# --- Auto-Send / 15-Min Vocabulary Drip Queries ---
+# --- Auto-Send / Interval-based Vocabulary Challenge Queries ---
+_SENTINEL = object()
+
 async def get_user_auto_settings(user_id: int) -> Dict[str, Any]:
     async with get_db_connection() as db:
         cursor = await db.execute("""
-            SELECT COALESCE(auto_send_enabled, 1) as enabled,
-                   COALESCE(auto_send_interval, 15) as interval,
-                   COALESCE(quiet_hours_enabled, 1) as quiet_hours_enabled,
-                   last_auto_sent_at
-            FROM users WHERE user_id = ?
+            SELECT COALESCE(u.auto_send_enabled, 1) as enabled,
+                   COALESCE(u.auto_send_interval, 15) as interval,
+                   COALESCE(u.quiet_hours_enabled, 1) as quiet_hours_enabled,
+                   u.last_auto_sent_at,
+                   u.auto_send_unit_id,
+                   un.name as auto_unit_name,
+                   (SELECT COUNT(*) FROM words w WHERE w.unit_id = u.auto_send_unit_id AND w.user_id = u.user_id) as auto_unit_word_count
+            FROM users u
+            LEFT JOIN units un ON un.id = u.auto_send_unit_id AND un.user_id = u.user_id
+            WHERE u.user_id = ?
         """, (user_id,))
         row = await cursor.fetchone()
         if not row:
-            return {"enabled": 1, "interval": 15, "quiet_hours_enabled": 1, "last_auto_sent_at": None}
-        return dict(row)
+            return {
+                "enabled": 1,
+                "interval": 15,
+                "quiet_hours_enabled": 1,
+                "last_auto_sent_at": None,
+                "auto_send_unit_id": None,
+                "auto_unit_name": None,
+                "auto_unit_word_count": 0,
+            }
+        data = dict(row)
+        if data.get("auto_send_unit_id") and not data.get("auto_unit_name"):
+            data["auto_send_unit_id"] = None
+            data["auto_unit_word_count"] = 0
+        return data
 
 async def update_user_auto_settings(
     user_id: int,
     enabled: Optional[int] = None,
     interval: Optional[int] = None,
     quiet_hours_enabled: Optional[int] = None,
+    auto_send_unit_id: Any = _SENTINEL,
 ):
     async with get_db_connection() as db:
         if enabled is not None:
@@ -259,6 +279,8 @@ async def update_user_auto_settings(
             await db.execute("UPDATE users SET auto_send_interval = ? WHERE user_id = ?", (interval, user_id))
         if quiet_hours_enabled is not None:
             await db.execute("UPDATE users SET quiet_hours_enabled = ? WHERE user_id = ?", (quiet_hours_enabled, user_id))
+        if auto_send_unit_id is not _SENTINEL:
+            await db.execute("UPDATE users SET auto_send_unit_id = ? WHERE user_id = ?", (auto_send_unit_id, user_id))
         await db.commit()
 
 async def get_users_due_for_auto_word() -> List[Dict[str, Any]]:
@@ -267,7 +289,8 @@ async def get_users_due_for_auto_word() -> List[Dict[str, Any]]:
         cursor = await db.execute("""
             SELECT u.user_id, u.full_name,
                    COALESCE(u.auto_send_interval, 15) as interval,
-                   COALESCE(u.quiet_hours_enabled, 1) as quiet_hours_enabled
+                   COALESCE(u.quiet_hours_enabled, 1) as quiet_hours_enabled,
+                   u.auto_send_unit_id
             FROM users u
             WHERE COALESCE(u.auto_send_enabled, 1) = 1
               AND EXISTS (SELECT 1 FROM words w WHERE w.user_id = u.user_id)
@@ -279,39 +302,82 @@ async def get_users_due_for_auto_word() -> List[Dict[str, Any]]:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-async def get_next_word_for_auto_send(user_id: int) -> Optional[Dict[str, Any]]:
+async def get_next_word_for_auto_send(user_id: int, unit_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     Picks a random mistaken word first for spaced repetition quiz:
     1. 'unknown' words (currently mistaken / not known)
     2. 'learning' words with past mistakes (incorrect_count > 0)
     3. 'learning' words (new / in progress)
     4. 'mastered' words (review)
-    Within the highest priority group, avoids repeating the exact last sent word and picks randomly.
+    If unit_id is provided or configured on user profile, restricts query to that unit.
+    If the specified unit has no words, falls back gracefully to all words of the user.
     """
     async with get_db_connection() as db:
-        cursor = await db.execute("""
-            SELECT w.*, un.name as unit_name,
-                   COALESCE(p.status, 'learning') as status,
-                   COALESCE(p.incorrect_count, 0) as incorrect_count,
-                   p.last_reviewed_at
-            FROM words w
-            LEFT JOIN units un ON un.id = w.unit_id
-            LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = w.user_id
-            WHERE w.user_id = ?
-            ORDER BY
-                CASE
-                    WHEN COALESCE(p.status, 'learning') = 'unknown' THEN 1
-                    WHEN COALESCE(p.incorrect_count, 0) > 0 AND COALESCE(p.status, 'learning') != 'mastered' THEN 2
-                    WHEN COALESCE(p.status, 'learning') = 'learning' THEN 3
-                    ELSE 4
-                END ASC,
-                CASE
-                    WHEN w.id = COALESCE((SELECT word_id FROM auto_challenges WHERE user_id = ? ORDER BY id DESC LIMIT 1), -1) THEN 1
-                    ELSE 0
-                END ASC,
-                RANDOM()
-            LIMIT 1
-        """, (user_id, user_id))
+        target_unit_id = unit_id
+        if target_unit_id is None:
+            c = await db.execute("SELECT auto_send_unit_id FROM users WHERE user_id = ?", (user_id,))
+            r = await c.fetchone()
+            if r and r["auto_send_unit_id"]:
+                target_unit_id = r["auto_send_unit_id"]
+
+        if target_unit_id is not None:
+            c = await db.execute(
+                "SELECT 1 FROM words WHERE user_id = ? AND unit_id = ? LIMIT 1",
+                (user_id, target_unit_id)
+            )
+            has_words = await c.fetchone()
+            if not has_words:
+                target_unit_id = None  # fallback to all units
+
+        if target_unit_id is not None:
+            cursor = await db.execute("""
+                SELECT w.*, un.name as unit_name,
+                       COALESCE(p.status, 'learning') as status,
+                       COALESCE(p.incorrect_count, 0) as incorrect_count,
+                       p.last_reviewed_at
+                FROM words w
+                LEFT JOIN units un ON un.id = w.unit_id
+                LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = w.user_id
+                WHERE w.user_id = ? AND w.unit_id = ?
+                ORDER BY
+                    CASE
+                        WHEN COALESCE(p.status, 'learning') = 'unknown' THEN 1
+                        WHEN COALESCE(p.incorrect_count, 0) > 0 AND COALESCE(p.status, 'learning') != 'mastered' THEN 2
+                        WHEN COALESCE(p.status, 'learning') = 'learning' THEN 3
+                        ELSE 4
+                    END ASC,
+                    CASE
+                        WHEN w.id = COALESCE((SELECT word_id FROM auto_challenges WHERE user_id = ? ORDER BY id DESC LIMIT 1), -1) THEN 1
+                        ELSE 0
+                    END ASC,
+                    RANDOM()
+                LIMIT 1
+            """, (user_id, target_unit_id, user_id))
+        else:
+            cursor = await db.execute("""
+                SELECT w.*, un.name as unit_name,
+                       COALESCE(p.status, 'learning') as status,
+                       COALESCE(p.incorrect_count, 0) as incorrect_count,
+                       p.last_reviewed_at
+                FROM words w
+                LEFT JOIN units un ON un.id = w.unit_id
+                LEFT JOIN user_word_progress p ON p.word_id = w.id AND p.user_id = w.user_id
+                WHERE w.user_id = ?
+                ORDER BY
+                    CASE
+                        WHEN COALESCE(p.status, 'learning') = 'unknown' THEN 1
+                        WHEN COALESCE(p.incorrect_count, 0) > 0 AND COALESCE(p.status, 'learning') != 'mastered' THEN 2
+                        WHEN COALESCE(p.status, 'learning') = 'learning' THEN 3
+                        ELSE 4
+                    END ASC,
+                    CASE
+                        WHEN w.id = COALESCE((SELECT word_id FROM auto_challenges WHERE user_id = ? ORDER BY id DESC LIMIT 1), -1) THEN 1
+                        ELSE 0
+                    END ASC,
+                    RANDOM()
+                LIMIT 1
+            """, (user_id, user_id))
+
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -330,36 +396,55 @@ async def get_auto_quiz_distractors(
     current_word_id: int,
     correct_value: str,
     field: str = "translation",
-    count: int = 3
+    count: int = 3,
+    unit_id: Optional[int] = None,
 ) -> List[str]:
-    """Fetch distinct distractors for either 'translation' (uz) or 'word' (en)."""
+    """Fetch distinct distractors for either 'translation' (uz) or 'word' (en), prioritizing same unit if available."""
     col = "translation" if field == "translation" else "word"
     correct_norm = (correct_value or "").strip().lower()
     seen = {correct_norm} if correct_norm else set()
     options: List[str] = []
 
     async with get_db_connection() as db:
-        cursor = await db.execute(f"""
-            SELECT {col} as val FROM words
-            WHERE user_id = ? AND id != ? AND TRIM(COALESCE({col}, '')) != ''
-            ORDER BY RANDOM()
-            LIMIT 25
-        """, (user_id, current_word_id))
-        rows = await cursor.fetchall()
-        for row in rows:
-            val = (row["val"] or "").strip()
-            norm = val.lower()
-            if val and norm not in seen:
-                seen.add(norm)
-                options.append(val)
-                if len(options) >= count:
-                    break
+        if unit_id is not None:
+            cursor = await db.execute(f"""
+                SELECT {col} as val FROM words
+                WHERE user_id = ? AND unit_id = ? AND id != ? AND TRIM(COALESCE({col}, '')) != ''
+                ORDER BY RANDOM()
+                LIMIT 20
+            """, (user_id, unit_id, current_word_id))
+            rows = await cursor.fetchall()
+            for row in rows:
+                val = (row["val"] or "").strip()
+                norm = val.lower()
+                if val and norm not in seen:
+                    seen.add(norm)
+                    options.append(val)
+                    if len(options) >= count:
+                        break
+
+        if len(options) < count:
+            cursor = await db.execute(f"""
+                SELECT {col} as val FROM words
+                WHERE user_id = ? AND id != ? AND TRIM(COALESCE({col}, '')) != ''
+                ORDER BY RANDOM()
+                LIMIT 25
+            """, (user_id, current_word_id))
+            rows = await cursor.fetchall()
+            for row in rows:
+                val = (row["val"] or "").strip()
+                norm = val.lower()
+                if val and norm not in seen:
+                    seen.add(norm)
+                    options.append(val)
+                    if len(options) >= count:
+                        break
 
     if len(options) < count:
         fallbacks = (
-            ["muhim, ahamiyatli", "qiyin, murakkab", "tez, chaqqon", "yangi, zamonaviy", "ishonchli", "kutilmagan"]
+            ["muhim, ahamiyatli", "qiyin, murakkab", "tez, chaqqon", "yangi, zamonaviy", "ishonchli", "kutilmagan", "foydali", "zaruriy"]
             if col == "translation"
-            else ["reluctant", "inevitable", "accurate", "significant", "temporary", "essential"]
+            else ["reluctant", "inevitable", "accurate", "significant", "temporary", "essential", "remarkable", "efficient"]
         )
         for dummy in fallbacks:
             if len(options) >= count:

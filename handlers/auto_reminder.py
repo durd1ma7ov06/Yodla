@@ -3,9 +3,17 @@ from datetime import datetime, timedelta, timezone
 import html
 import logging
 import random
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BufferedInputFile,
+)
 from aiogram.exceptions import TelegramForbiddenError
 
 from database.queries import (
@@ -20,7 +28,10 @@ from database.queries import (
     mark_auto_challenge_answered,
     record_answer,
     get_word_by_id,
+    get_user_units,
+    get_unit,
 )
+from states.bot_states import AutoReminderStates
 from services.tts_service import generate_speech_bytes
 
 logger = logging.getLogger(__name__)
@@ -46,6 +57,36 @@ def _truncate_btn(text: str, max_len: int = 44) -> str:
     return clean[: max_len - 3].rstrip() + "..."
 
 
+def _format_interval_label(minutes: int) -> str:
+    if minutes < 60:
+        return f"Har {minutes} daqiqada"
+    hours = minutes // 60
+    rem = minutes % 60
+    if rem == 0:
+        return "Har 1 soatda" if hours == 1 else f"Har {hours} soatda"
+    return f"Har {hours} soat {rem} daqiqada"
+
+
+def _format_interval_btn(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes} min"
+    hours = minutes // 60
+    rem = minutes % 60
+    if rem == 0:
+        return f"{hours} soat"
+    return f"{hours}s {rem}m"
+
+
+def _format_challenge_header(interval_min: int) -> str:
+    if interval_min < 60:
+        return f"{interval_min} DAQIQALIK"
+    hours = interval_min // 60
+    rem = interval_min % 60
+    if rem == 0:
+        return f"{hours} SOATLIK"
+    return f"{hours} SOAT {rem} DAQIQALIK"
+
+
 def _build_challenge_text(
     word: Dict[str, Any],
     interval_min: int,
@@ -57,6 +98,7 @@ def _build_challenge_text(
     badge = _status_badge(status, incorrect_count)
     unit_name = html.escape(word.get("unit_name") or "Umumiy")
     pos = f" <i>({html.escape(word['part_of_speech'])})</i>" if word.get("part_of_speech") else ""
+    header_title = _format_challenge_header(interval_min)
 
     if direction == "en_to_uz":
         dir_label = "🇬🇧 ➔ 🇺🇿"
@@ -80,7 +122,7 @@ def _build_challenge_text(
         options_block = "\n\n" + "\n".join(lines)
 
     return (
-        f"⏰ <b>{interval_min} DAQIQALIK SO'Z TESTI</b>  ({dir_label})\n"
+        f"⏰ <b>{header_title} SO'Z TESTI</b>  ({dir_label})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📁 <b>Unit:</b> {unit_name}  •  {badge}\n\n"
         f"{prompt_block}{options_block}\n"
@@ -149,8 +191,13 @@ def _build_post_answer_kb(word_id: int) -> InlineKeyboardMarkup:
     )
 
 
-async def send_auto_word_to_user(bot: Bot, user_id: int, interval_min: int = 15) -> bool:
-    word = await get_next_word_for_auto_send(user_id)
+async def send_auto_word_to_user(
+    bot: Bot,
+    user_id: int,
+    interval_min: int = 15,
+    unit_id: Optional[int] = None,
+) -> bool:
+    word = await get_next_word_for_auto_send(user_id, unit_id=unit_id)
     if not word:
         return False
 
@@ -160,15 +207,16 @@ async def send_auto_word_to_user(bot: Bot, user_id: int, interval_min: int = 15)
         return False
 
     direction = random.choice(["en_to_uz", "uz_to_en"])
+    w_unit_id = word.get("unit_id")
     if direction == "en_to_uz":
         correct_value = word["translation"].strip()
         distractors = await get_auto_quiz_distractors(
-            user_id, word["id"], correct_value, field="translation", count=3
+            user_id, word["id"], correct_value, field="translation", count=3, unit_id=w_unit_id
         )
     else:
         correct_value = word["word"].strip()
         distractors = await get_auto_quiz_distractors(
-            user_id, word["id"], correct_value, field="word", count=3
+            user_id, word["id"], correct_value, field="word", count=3, unit_id=w_unit_id
         )
 
     options = distractors + [correct_value]
@@ -211,7 +259,7 @@ def _is_quiet_hours_uzb(now_dt: datetime | None = None) -> bool:
 
 async def auto_word_scheduler(bot: Bot):
     """Background loop checking every 60 seconds for users due for their vocabulary drip."""
-    logger.info("⏰ Avto-Eslatma (Har 15 minutlik so'z yuborish) tizimi ishga tushdi.")
+    logger.info("⏰ Avto-Eslatma tizimi muvaffaqiyatli ishga tushdi.")
     while True:
         try:
             await asyncio.sleep(60)
@@ -220,7 +268,12 @@ async def auto_word_scheduler(bot: Bot):
             for u in due_users:
                 if is_night and u.get("quiet_hours_enabled", 1):
                     continue
-                await send_auto_word_to_user(bot, u["user_id"], u["interval"])
+                await send_auto_word_to_user(
+                    bot,
+                    u["user_id"],
+                    interval_min=u["interval"],
+                    unit_id=u.get("auto_send_unit_id"),
+                )
                 await asyncio.sleep(0.2)
         except asyncio.CancelledError:
             logger.info("Avto-Eslatma scheduler to'xtatildi.")
@@ -230,68 +283,201 @@ async def auto_word_scheduler(bot: Bot):
             await asyncio.sleep(10)
 
 
-# --- Settings Menu ---
-def _format_interval_label(minutes: int) -> str:
-    if minutes < 60:
-        return f"Har {minutes} daqiqada"
-    hours = minutes // 60
-    return f"Har {hours} soatda"
-
-
+# --- Settings & Unit Picker Menu Builders ---
 async def _build_settings_ui(user_id: int):
     settings = await get_user_auto_settings(user_id)
     enabled = bool(settings["enabled"])
     interval = settings["interval"]
     quiet_on = bool(settings.get("quiet_hours_enabled", 1))
+    auto_send_unit_id = settings.get("auto_send_unit_id")
+    auto_unit_name = settings.get("auto_unit_name")
+    auto_unit_cnt = settings.get("auto_unit_word_count", 0)
 
     status_str = "🟢 Yoqilgan (Faol)" if enabled else "🔴 O'chirilgan"
-    quiet_str = "🌙 Yoqilgan (22:30–07:30 jim)" if quiet_on else "☀️ O'chirilgan (24/7)"
+    quiet_str = "🌙 Yoqilgan (22:30–07:30 jim)" if quiet_on else "☀️ O'chirilgan (24/7 faol)"
     interval_str = _format_interval_label(interval)
+
+    if auto_send_unit_id and auto_unit_name:
+        unit_display = f"📚 <b>{html.escape(auto_unit_name)}</b> <i>({auto_unit_cnt} ta so'z)</i>"
+        unit_btn_label = f"📁 To'plam: {_truncate_btn(auto_unit_name, 22)} ❯"
+    else:
+        unit_display = "🌐 <b>Barcha to'plamlar (Hammasi)</b>"
+        unit_btn_label = "📁 To'plam: 🌐 Barcha to'plamlar ❯"
 
     text = (
         "⏰ <b>AVTO-ESLATMA SOZLAMALARI (SMART TEST)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "Bot belgilangan vaqt oralig'ida sizning <b>🔴 xato qilgan / qiyin so'zlaringizdan</b> "
-        "tasodifiy birini tanlab, faqat <b>bitta tomonini</b> yuboradi:\n"
+        "Bot belgilangan vaqt oralig'ida sizga qiyin va xato qilingan so'zlaringizdan "
+        "<b>bitta tomonli tezkor savol</b> yuborib turadi:\n"
         "• 🇬🇧 Inglizcha kelsa — 🇺🇿 o'zbekchasini topasiz;\n"
         "• 🇺🇿 O'zbekcha kelsa — 🇬🇧 inglizchasini topasiz.\n\n"
         f"• <b>Holati:</b> {status_str}\n"
-        f"• <b>Yuborish tezligi:</b> <b>{interval_str}</b>\n"
-        f"• <b>Tungi uyqu rejimi:</b> {quiet_str}\n"
+        f"• 📁 <b>Tanlangan to'plam:</b> {unit_display}\n"
+        f"• ⏱ <b>Yuborish tezligi:</b> <b>{interval_str}</b>\n"
+        f"• 🌙 <b>Tungi uyqu rejimi:</b> {quiet_str}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Sozlash uchun tugmalardan foydalaning:</i>"
+        "<i>Sozlamalarni o'zgartirish uchun tugmalardan foydalaning:</i>"
     )
 
-    toggle_text = "🔴 O'chirib qo'yish" if enabled else "🟢 Yoqish"
+    toggle_text = "🔴 Eslatmani o'chirib qo'yish" if enabled else "🟢 Eslatmani yoqish"
     quiet_btn = "🌙 Uyqu rejimini o'chirish (24/7)" if quiet_on else "🌙 Uyqu rejimini yoqish (22:30–07:30)"
+
+    def _int_btn(mins: int) -> InlineKeyboardButton:
+        check = "✅ " if interval == mins else ""
+        return InlineKeyboardButton(text=f"{check}{_format_interval_btn(mins)}", callback_data=f"auto_int:{mins}")
+
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=toggle_text, callback_data="auto_toggle")],
+            [InlineKeyboardButton(text=unit_btn_label, callback_data="auto_unit_pick:0")],
             [
-                InlineKeyboardButton(text=f"{'✅ ' if interval == 15 else ''}15 min", callback_data="auto_int:15"),
-                InlineKeyboardButton(text=f"{'✅ ' if interval == 30 else ''}30 min", callback_data="auto_int:30"),
-                InlineKeyboardButton(text=f"{'✅ ' if interval == 60 else ''}1 soat", callback_data="auto_int:60"),
-                InlineKeyboardButton(text=f"{'✅ ' if interval == 180 else ''}3 soat", callback_data="auto_int:180"),
+                _int_btn(5),
+                _int_btn(10),
+                _int_btn(15),
+                _int_btn(30),
+            ],
+            [
+                _int_btn(45),
+                _int_btn(60),
+                _int_btn(120),
+                _int_btn(180),
+            ],
+            [
+                _int_btn(360),
+                InlineKeyboardButton(text="✍️ Boshqa daqiqa", callback_data="auto_custom_int"),
             ],
             [InlineKeyboardButton(text=quiet_btn, callback_data="auto_quiet_toggle")],
             [InlineKeyboardButton(text="⚡ Hozir bitta savol yuborish", callback_data="auto_send_now")],
-            [InlineKeyboardButton(text="🔙 Menyuga qaytish", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="🔙 Asosiy menyu", callback_data="back_to_menu")],
         ]
     )
     return text, kb
 
 
-@router.message(F.text == "⏰ Avto-Eslatma (Har 15 min)")
-async def cmd_auto_settings(message: Message):
+async def _build_unit_picker_ui(user_id: int, page: int = 0):
+    units = await get_user_units(user_id)
+    settings = await get_user_auto_settings(user_id)
+    current_unit_id = settings.get("auto_send_unit_id")
+    current_name = settings.get("auto_unit_name") or "🌐 Barcha to'plamlar"
+
+    text = (
+        "📁 <b>AVTO-ESLATMA UCHUN TO'PLAMNI TANLANG</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Avtomatik savollar aynan qaysi Unitdan yuborilishini tanlang.\n"
+        "Agar <b>'Barcha to'plamlar'</b> tanlansa, barcha lug'atingizdagi so'zlar aralash yuboriladi.\n\n"
+        f"• <b>Hozirgi to'plam:</b> <b>{html.escape(current_name)}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Kerakli to'plam ustiga bosing:</i>"
+    )
+
+    rows = []
+    # All units option
+    all_mark = "✅ " if current_unit_id is None else "🌐 "
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{all_mark}Barcha to'plamlarim (Hammasi)",
+            callback_data="auto_set_unit:all",
+        )
+    ])
+
+    page_size = 6
+    total_units = len(units)
+    total_pages = max(1, (total_units + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    sliced = units[page * page_size : (page + 1) * page_size]
+
+    for u in sliced:
+        is_sel = (current_unit_id == u["id"])
+        mark = "✅ " if is_sel else "📚 "
+        u_name = _truncate_btn(u["name"], 26)
+        w_cnt = u.get("word_count", 0)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{mark}{u_name} ({w_cnt} ta so'z)",
+                callback_data=f"auto_set_unit:{u['id']}",
+            )
+        ])
+
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"auto_unit_pick:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="auto_noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"auto_unit_pick:{page + 1}"))
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton(text="🔙 Sozlamalarga qaytish", callback_data="auto_settings_open")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# --- Router Handlers ---
+@router.message(F.text.in_([
+    "⏰ Avto-Eslatma",
+    "⏰ Avto-Eslatma (Har 15 min)",
+    "⏰ Avto-Eslatma (Smart Test)",
+]))
+@router.message(Command("auto", "reminder"))
+async def cmd_auto_settings(message: Message, state: FSMContext):
+    await state.clear()
     text, kb = await _build_settings_ui(message.from_user.id)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "auto_settings_open")
-async def cb_open_auto_settings(callback: CallbackQuery):
+async def cb_open_auto_settings(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     text, kb = await _build_settings_ui(callback.from_user.id)
-    await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("auto_unit_pick:"))
+async def cb_unit_picker(callback: CallbackQuery):
+    page = int(callback.data.split(":")[1])
+    text, kb = await _build_unit_picker_ui(callback.from_user.id, page=page)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "auto_noop")
+async def cb_auto_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("auto_set_unit:"))
+async def cb_set_unit(callback: CallbackQuery):
+    target = callback.data.split(":")[1]
+    user_id = callback.from_user.id
+
+    if target == "all":
+        await update_user_auto_settings(user_id, auto_send_unit_id=None)
+        await callback.answer("✅ 'Barcha to'plamlar' tanlandi!")
+    else:
+        unit_id = int(target)
+        await update_user_auto_settings(user_id, auto_send_unit_id=unit_id)
+        unit = await get_unit(unit_id, user_id)
+        u_name = unit["name"] if unit else "Unit"
+        await callback.answer(f"✅ '{u_name}' to'plami tanlandi!")
+
+    text, kb = await _build_settings_ui(user_id)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("auto_set_unit_from_unit:"))
+async def cb_set_unit_from_unit_details(callback: CallbackQuery):
+    unit_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+    unit = await get_unit(unit_id, user_id)
+    if not unit:
+        await callback.answer("Unit topilmadi!", show_alert=True)
+        return
+
+    await update_user_auto_settings(user_id, enabled=1, auto_send_unit_id=unit_id)
+    await callback.answer(f"✅ '{unit['name']}' to'plami avto-eslatmaga biriktirildi!", show_alert=True)
 
 
 @router.callback_query(F.data == "auto_toggle")
@@ -316,7 +502,7 @@ async def cb_toggle_quiet_hours(callback: CallbackQuery):
     text, kb = await _build_settings_ui(user_id)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer(
-        "🌙 Tungi uyqu rejimi yoqildi (22:30–07:30)!" if new_val else "☀️ Uyqu rejimi o'chirildi (24/7)!"
+        "🌙 Tungi uyqu rejimi yoqildi (22:30–07:30)!" if new_val else "☀️ Uyqu rejimi o'chirildi (24/7 faol)!"
     )
 
 
@@ -328,16 +514,65 @@ async def cb_set_interval(callback: CallbackQuery):
 
     text, kb = await _build_settings_ui(user_id)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    await callback.answer(f"Vaqt oralig'i {_format_interval_label(interval)} qilib belgilandi!")
+    await callback.answer(f"Tezlik {_format_interval_label(interval)} qilib belgilandi!")
+
+
+@router.callback_query(F.data == "auto_custom_int")
+async def cb_custom_interval_prompt(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AutoReminderStates.waiting_for_custom_interval)
+    text = (
+        "⏱ <b>MAXSUS VAQT ORALIG'INI KIRITING</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Bot har necha daqiqada so'z yuborib tursin?\n\n"
+        "<i>1 dan 1440 gacha butun son kiriting (masalan: <code>20</code>, <code>40</code>, <code>90</code> yoki <code>120</code>):</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Bekor qilish", callback_data="auto_settings_open")]]
+    )
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.message(AutoReminderStates.waiting_for_custom_interval)
+async def process_custom_interval(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer(
+            "⚠️ Iltimos, faqat butun son kiriting (masalan: <code>20</code>, <code>45</code> yoki <code>90</code>):",
+            parse_mode="HTML",
+        )
+        return
+
+    val = int(raw)
+    if val < 1 or val > 1440:
+        await message.answer("⚠️ Vaqt oralig'i 1 daqiqadan 1440 daqiqagacha (24 soat) bo'lishi mumkin.")
+        return
+
+    await update_user_auto_settings(message.from_user.id, enabled=1, interval=val)
+    await state.clear()
+
+    await message.answer(f"✅ Vaqt oralig'i <b>{_format_interval_label(val)}</b> qilib o'rnatildi!", parse_mode="HTML")
+    text, kb = await _build_settings_ui(message.from_user.id)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "auto_send_now")
 async def cb_auto_send_now(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     settings = await get_user_auto_settings(user_id)
-    sent = await send_auto_word_to_user(bot, user_id, settings["interval"])
+    sent = await send_auto_word_to_user(
+        bot,
+        user_id,
+        interval_min=settings["interval"],
+        unit_id=settings.get("auto_send_unit_id"),
+    )
     if not sent:
-        await callback.answer("Sizda hali so'zlar yo'q! Avval rasm yoki matn orqali so'z qo'shing.", show_alert=True)
+        unit_name = settings.get("auto_unit_name")
+        if unit_name:
+            msg = f"Tanlangan '{unit_name}' to'plamida so'zlar topilmadi. Avval so'z qo'shing yoki boshqa to'plamni tanlang."
+        else:
+            msg = "Sizda hali so'zlar yo'q! Avval rasm yoki matn orqali so'z qo'shing."
+        await callback.answer(msg, show_alert=True)
     else:
         await callback.answer("Savol yuborildi!")
 
@@ -423,7 +658,7 @@ async def cb_auto_quiz_reveal(callback: CallbackQuery):
     await callback.answer("So'z 🔴 Qiyin so'zlar ro'yxatiga qo'shildi.")
 
 
-# --- Backward-compatible Legacy Card Handlers & TTS ---
+# --- Legacy Card Handlers & TTS ---
 @router.callback_query(F.data.startswith("auto_know:"))
 async def cb_auto_know(callback: CallbackQuery):
     word_id = int(callback.data.split(":")[1])

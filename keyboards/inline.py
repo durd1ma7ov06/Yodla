@@ -49,6 +49,9 @@ def get_unit_details_keyboard(unit_id: int) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="✍️ Imlo mashqi", callback_data=f"unit_typing:{unit_id}"),
+                InlineKeyboardButton(text="⏰ Avto-eslatmaga qo'yish", callback_data=f"auto_set_unit_from_unit:{unit_id}")
+            ],
+            [
                 InlineKeyboardButton(text="🗑 Unitni o'chirish", callback_data=f"unit_delete:{unit_id}")
             ],
             [InlineKeyboardButton(text="🔙 Unitlar ro'yxatiga qaytish", callback_data="back_to_units")]

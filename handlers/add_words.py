@@ -26,6 +26,7 @@ _MAIN_MENU_BTNS = {
     "✍️ Imlo mashqi (Spelling)",
     "🎧 Eshitib topish (Listening)",
     "🧩 Gap to'ldirish (Kontekst)",
+    "⏰ Avto-Eslatma",
     "⏰ Avto-Eslatma (Har 15 min)",
     "💡 Qo'llanma va Yordam",
 }
